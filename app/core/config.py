@@ -7,6 +7,7 @@ from pydantic import Field, model_validator
 from typing import Optional
 import os
 import logging
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -141,9 +142,21 @@ class Settings(BaseSettings):
         elif sync_url and not async_url:
             async_url = self._to_async_url(sync_url)
         else:
-            # Normalize both when both are provided (handles postgres:// legacy scheme).
             async_url = self._to_async_url(async_url)
             sync_url = self._to_sync_url(sync_url)
+            # If one URL points to localhost and the other doesn't, trust the non-localhost URL.
+            # This prevents repo .env localhost values from breaking cloud deployments.
+            if self._is_local_url(async_url) and not self._is_local_url(sync_url):
+                async_url = self._to_async_url(sync_url)
+            elif self._is_local_url(sync_url) and not self._is_local_url(async_url):
+                sync_url = self._to_sync_url(async_url)
+
+        # Render should never run against localhost DB.
+        if os.getenv("RENDER", "").lower() in {"true", "1"}:
+            if self._is_local_url(async_url) or self._is_local_url(sync_url):
+                raise ValueError(
+                    "Database URL points to localhost in Render. Set DATABASE_URL to your Render Postgres URL."
+                )
 
         self.DATABASE_URL = async_url
         self.DATABASE_URL_SYNC = sync_url
@@ -168,6 +181,17 @@ class Settings(BaseSettings):
         elif value.startswith("postgresql+asyncpg://"):
             value = value.replace("postgresql+asyncpg://", "postgresql://", 1)
         return value
+
+    @staticmethod
+    def _is_local_url(url: str) -> bool:
+        value = (url or "").strip()
+        if not value:
+            return True
+        try:
+            host = (urlparse(value).hostname or "").lower()
+        except Exception:
+            return False
+        return host in {"localhost", "127.0.0.1", "::1"}
     
     # Lowercase alias properties for backward compatibility
     @property
