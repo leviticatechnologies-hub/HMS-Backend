@@ -34,7 +34,7 @@ firebase-admin>=6.5.0
 
 # PDF generation
 reportlab>=4.2.0
-weasyprint>=62.3
+#weasyprint>=62.3
 
 # Background tasks & scheduling
 # (asyncio-based — no Celery required for basic scheduling)
