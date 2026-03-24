@@ -5,6 +5,7 @@ Handles JWT tokens, password hashing, and permission checking.
 from datetime import datetime, timedelta
 from typing import Optional, List
 from passlib.context import CryptContext
+import logging
 from jose import JWTError, jwt
 from fastapi import HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -18,7 +19,8 @@ from app.models.user import User, Role, Permission
 from app.core.enums import UserStatus
 
 # Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+logger = logging.getLogger(__name__)
+pwd_context = CryptContext(schemes=["bcrypt", "pbkdf2_sha256"], deprecated="auto")
 
 # JWT token scheme
 security = HTTPBearer()
@@ -29,13 +31,25 @@ class SecurityManager:
     
     @staticmethod
     def hash_password(password: str) -> str:
-        """Hash a password using bcrypt"""
-        return pwd_context.hash(password)
+        """
+        Hash password.
+        Prefer bcrypt; if backend is unavailable/incompatible in runtime,
+        gracefully fallback to pbkdf2_sha256 so startup/login don't break.
+        """
+        try:
+            return pwd_context.hash(password, scheme="bcrypt")
+        except Exception as e:
+            logger.warning(f"bcrypt hashing unavailable, using pbkdf2_sha256 fallback: {e}")
+            return pwd_context.hash(password, scheme="pbkdf2_sha256")
     
     @staticmethod
     def verify_password(plain_password: str, hashed_password: str) -> bool:
         """Verify a password against its hash"""
-        return pwd_context.verify(plain_password, hashed_password)
+        try:
+            return pwd_context.verify(plain_password, hashed_password)
+        except Exception as e:
+            logger.warning(f"Password verify failed due to hash backend error: {e}")
+            return False
     
     @staticmethod
     def generate_temp_password(length: int = 12) -> str:
