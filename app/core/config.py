@@ -223,7 +223,9 @@ class Settings(BaseSettings):
         logger.debug(f"   Sync URL: {masked_sync_url}")
     
     class Config:
-        env_file = ".env"
+        # Never read repository .env on Render.
+        # This prevents localhost credentials from being used in production.
+        env_file = None if os.getenv("RENDER", "").lower() in {"true", "1"} else ".env"
         case_sensitive = True
 
 
