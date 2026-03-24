@@ -153,10 +153,13 @@ class Settings(BaseSettings):
                 sync_url = self._to_sync_url(async_url)
 
         # Render should never run against localhost DB.
+        # Warn instead of raising, so the app can still boot in degraded mode
+        # and expose health/docs while env vars are being fixed.
         if os.getenv("RENDER", "").lower() in {"true", "1"}:
             if self._is_local_url(async_url) or self._is_local_url(sync_url):
-                raise ValueError(
-                    "Database URL points to localhost in Render. Set DATABASE_URL to your Render Postgres URL."
+                logger.warning(
+                    "Database URL points to localhost in Render. "
+                    "Set DATABASE_URL to your Render Postgres URL."
                 )
 
         self.DATABASE_URL = async_url
