@@ -10,8 +10,9 @@ import logging
 from urllib.parse import urlparse
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# Load .env only for local/dev. In Render, rely on service environment variables.
+if os.getenv("RENDER", "").lower() not in {"true", "1"}:
+    load_dotenv()
 
 logger = logging.getLogger(__name__)
 
