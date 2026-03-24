@@ -385,6 +385,37 @@ async def _post_daily_bed_charges():
     logger.info(f"Daily bed charge posting complete: {posted} admission(s) charged")
 
 
+async def sync_superadmin_credentials():
+    """
+    Ensure SUPERADMIN_EMAIL/SUPERADMIN_PASSWORD from environment
+    are applied to the existing superadmin user.
+    Runs independently from migration lock flow.
+    """
+    from app.database.session import AsyncSessionLocal
+    from app.models.user import User
+    from app.core.security import SecurityManager
+    from sqlalchemy import select, func
+
+    superadmin_email = (settings.SUPERADMIN_EMAIL or "").strip().lower()
+    if not superadmin_email or not settings.SUPERADMIN_PASSWORD:
+        return
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(User).where(func.lower(User.email) == superadmin_email).limit(1)
+        )
+        user = result.scalar_one_or_none()
+        if not user:
+            logger.warning("SuperAdmin sync skipped: user not found in database yet")
+            return
+
+        security = SecurityManager()
+        if not security.verify_password(settings.SUPERADMIN_PASSWORD, user.password_hash):
+            user.password_hash = security.hash_password(settings.SUPERADMIN_PASSWORD)
+            await db.commit()
+            logger.info("SuperAdmin password synced from environment")
+
+
 async def lifespan(app: FastAPI):
     """Application lifespan with single setup function"""
     logger.info(" Starting Hospital Management SaaS application...")
@@ -392,6 +423,10 @@ async def lifespan(app: FastAPI):
     try:
         db_ready = await setup_database_once()
         if db_ready:
+            try:
+                await sync_superadmin_credentials()
+            except Exception as sync_ex:
+                logger.warning(f"SuperAdmin credential sync skipped: {sync_ex}")
             logger.info(" Application startup complete - Ready to serve requests")
         else:
             logger.warning(" Application started in degraded mode (database setup incomplete)")
