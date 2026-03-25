@@ -126,6 +126,10 @@ class Settings(BaseSettings):
     PAYTM_WEBSITE: str = Field(default="WEBSTAGING", env="PAYTM_WEBSITE")
     PAYTM_CALLBACK_URL: str = Field(default="", env="PAYTM_CALLBACK_URL")
 
+    # Public demo request (DCM / marketing form)
+    DEMO_REQUEST_NOTIFY_EMAIL: str = Field(default="", env="DEMO_REQUEST_NOTIFY_EMAIL")
+    DEMO_REQUEST_SEND_CONFIRMATION: bool = Field(default=True, env="DEMO_REQUEST_SEND_CONFIRMATION")
+
     @model_validator(mode="after")
     def normalize_database_urls(self):
         """

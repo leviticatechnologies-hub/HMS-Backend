@@ -131,6 +131,7 @@ async def seed_superadmin():
                     logger.info(f"Committed {roles_created} new roles to database")
                 
                 # Step 2: Check if Super Admin already exists
+                security = SecurityManager()
                 superadmin_email = (settings.SUPERADMIN_EMAIL or "").strip().lower()
                 logger.info(f"Checking if SuperAdmin exists: {superadmin_email}")
                 existing_admin_query = select(User).where(func.lower(User.email) == superadmin_email)
@@ -191,7 +192,6 @@ async def seed_superadmin():
                 
                 # Step 4: Hash password using project's security manager
                 logger.info(" Hashing SuperAdmin password...")
-                security = SecurityManager()
                 password_hash = security.hash_password(settings.SUPERADMIN_PASSWORD)
                 
                 # Step 5: Create Super Admin user with insert-if-not-exists logic
@@ -285,6 +285,7 @@ async def create_all_tables_from_models():
     This lets us bring up a fresh database just by running main.py.
     """
     try:
+        import app.models  # noqa: F401 — register all models (including DemoRequest) on Base.metadata
         from app.database.base import Base
 
         logger.info(" Creating all tables from SQLAlchemy models (DB_BOOTSTRAP_FROM_MODELS=True)...")
@@ -589,6 +590,7 @@ KEEP_TABLES = {
     "chain_of_custody",
     "compliance_exports",
     "departments",
+    "demo_requests",
     "discharge_summaries",
     "doctor_profiles",
     "doctor_schedules",
@@ -863,6 +865,11 @@ async def verify_superadmin():
 
 # Include API routers
 app.include_router(api_router)
+
+# Public demo request (DCM) — mounted after main API
+from app.api.demo_public import router as demo_public_router
+
+app.include_router(demo_public_router)
 
 
 if __name__ == "__main__":

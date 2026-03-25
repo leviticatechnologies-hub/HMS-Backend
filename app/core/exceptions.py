@@ -72,6 +72,33 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     
     Converts request validation errors to standardized error response.
     """
+    # Public DCM demo form expects flat { success, error } per integration spec.
+    if request.url.path.startswith("/demo"):
+        errs = exc.errors()
+        if not errs:
+            friendly = "Invalid request"
+        else:
+            err = errs[0]
+            loc = tuple(err.get("loc") or ())
+            msg = err.get("msg", "Invalid value")
+            err_type = err.get("type")
+            if loc == ("body",) or not loc:
+                friendly = "Invalid or empty JSON body"
+            else:
+                field = str(loc[-1]) if loc else "field"
+                if field == "email" and "email" in msg.lower():
+                    friendly = "A valid work email is required"
+                elif err_type == "missing" or "field required" in msg.lower():
+                    friendly = f"{field.replace('_', ' ').title()} is required"
+                elif "preferred_demo_date" in loc:
+                    friendly = msg
+                else:
+                    friendly = msg
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"success": False, "error": friendly},
+        )
+
     errors = []
     for error in exc.errors():
         field_path = " -> ".join([str(loc) for loc in error["loc"]])

@@ -79,6 +79,9 @@ from app.models.billing import (
 # Import support models
 from app.models.support import SupportTicket
 
+# Public demo requests (marketing / DCM)
+from app.models.demo_request import DemoRequest
+
 __all__ = [
     # Base models
     "BaseModel",
@@ -195,4 +198,7 @@ __all__ = [
 
     # Support
     "SupportTicket",
+
+    # Demo / DCM
+    "DemoRequest",
 ]
