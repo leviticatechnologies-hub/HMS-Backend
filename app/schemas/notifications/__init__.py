@@ -23,6 +23,7 @@ from app.schemas.notifications.send import (
     BulkSmsRequest,
 )
 from app.schemas.notifications.history import NotificationHistoryFilters, NotificationQueueQuery
+from app.schemas.notifications.ticket_email import TicketEmailRequest
 
 __all__ = [
     "NotificationProviderResponse",
@@ -42,4 +43,5 @@ __all__ = [
     "BulkSmsRequest",
     "NotificationHistoryFilters",
     "NotificationQueueQuery",
+    "TicketEmailRequest",
 ]

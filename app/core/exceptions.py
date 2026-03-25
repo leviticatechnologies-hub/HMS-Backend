@@ -72,8 +72,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     
     Converts request validation errors to standardized error response.
     """
-    # Public DCM demo form expects flat { success, error } per integration spec.
-    if request.url.path.startswith("/demo") or request.url.path.startswith("/contact"):
+    # Public DCM demo/contact forms and internal ticket-email expect flat { success, error } per integration spec.
+    if (
+        request.url.path.startswith("/demo")
+        or request.url.path.startswith("/contact")
+        or "ticket-email" in request.url.path
+    ):
         errs = exc.errors()
         if not errs:
             friendly = "Invalid request"
@@ -86,7 +90,9 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
                 friendly = "Invalid or empty JSON body"
             else:
                 field = str(loc[-1]) if loc else "field"
-                if field == "email" and "email" in msg.lower():
+                if field == "hospital_email":
+                    friendly = "Hospital email is required" if err_type == "missing" else msg
+                elif field == "email" and "email" in msg.lower():
                     friendly = "A valid work email is required"
                 elif err_type == "missing" or "field required" in msg.lower():
                     friendly = f"{field.replace('_', ' ').title()} is required"

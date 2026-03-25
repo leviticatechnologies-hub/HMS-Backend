@@ -485,6 +485,70 @@ async def create_support_ticket(
         )
     h_uuid = hospital.id
     result = await service.create_support_ticket(h_uuid, current_user.id, body.subject, body.description, body.priority)
+
+    # Auto-send ticket notification email to hospital email + hospital admins.
+    # This removes the need for a separate "ticket-email" call from the frontend.
+    try:
+        from sqlalchemy import select
+        from app.models.user import User as UserModel, Role
+        from app.core.enums import UserRole as _UserRole
+        from app.services.email_service import EmailService
+
+        ticket_id = result.get("ticket_id")
+        priority = (body.priority or "NORMAL").strip().upper()
+
+        recipients_set: set[str] = set()
+        if getattr(hospital, "email", None):
+            recipients_set.add(str(hospital.email).strip().lower())
+
+        # Add all hospital admin emails
+        admins_q = await db.execute(
+            select(UserModel.email).where(
+                UserModel.hospital_id == h_uuid,
+                UserModel.roles.any(Role.name == _UserRole.HOSPITAL_ADMIN.value),
+                UserModel.email.is_not(None),
+            )
+        )
+        for email in admins_q.scalars().all():
+            if email:
+                recipients_set.add(str(email).strip().lower())
+
+        if recipients_set:
+            email_subject = f"New Support Ticket Created - {ticket_id}"
+            html = f"""
+            <p>Hello,</p>
+            <p>A new support ticket has been created for your hospital.</p>
+            <p><b>Ticket ID:</b> {ticket_id}</p>
+            <p><b>Subject:</b> {body.subject}</p>
+            <p><b>Description:</b> {body.description}</p>
+            <p><b>Priority:</b> {priority}</p>
+            <p>Our support team will get back to you shortly.</p>
+            <p>Regards,<br/>Support Team</p>
+            """
+            text = (
+                "Hello,\n\n"
+                "A new support ticket has been created for your hospital.\n\n"
+                f"Ticket ID: {ticket_id}\n"
+                f"Subject: {body.subject}\n"
+                f"Description: {body.description}\n"
+                f"Priority: {priority}\n\n"
+                "Our support team will get back to you shortly.\n\n"
+                "Regards,\nSupport Team\n"
+            )
+
+            email_service = EmailService()
+            for recipient in recipients_set:
+                await email_service.send_email(recipient, email_subject, html, text)
+
+            result["email_sent"] = True
+        else:
+            result["email_sent"] = False
+
+    except Exception as e:
+        # Never fail ticket creation if email sending fails.
+        result["email_sent"] = False
+        result["email_error"] = str(e)
+
     return result
 
 
@@ -561,7 +625,7 @@ async def get_audit_logs(
 # ============================================================================
 
 class NotifyHospitalAdminsRequest(BaseModel):
-    hospital_id: Optional[str] = None  # If None, notify all hospital admins
+    hospital_name: Optional[str] = None  # If None, notify all hospital admins
     subject: str
     message: str
 
@@ -570,9 +634,30 @@ class NotifyHospitalAdminsRequest(BaseModel):
 async def notify_hospital_admins(
     body: NotifyHospitalAdminsRequest,
     current_user: User = Depends(require_super_admin()),
-    service: SuperAdminService = Depends(get_super_admin_service)
+    service: SuperAdminService = Depends(get_super_admin_service),
+    db: AsyncSession = Depends(get_db_session),
 ):
-    """Send email notification to hospital admin(s). Optionally filter by hospital_id."""
-    h_uuid = uuid.UUID(body.hospital_id) if body.hospital_id else None
+    """Send email notification to hospital admin(s). Optionally filter by hospital_name."""
+    from sqlalchemy import select, func
+    from app.models.tenant import Hospital
+
+    h_uuid = None
+    if body.hospital_name:
+        name = (body.hospital_name or "").strip()
+        if not name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "EMPTY_HOSPITAL_NAME", "message": "hospital_name cannot be empty"},
+            )
+        r = await db.execute(select(Hospital).where(func.lower(Hospital.name) == name.lower()).limit(1))
+        hospital = r.scalar_one_or_none()
+        if hospital:
+            h_uuid = hospital.id
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "HOSPITAL_NOT_FOUND", "message": f"No hospital found with name: {name}"},
+            )
+
     result = await service.notify_hospital_admins(h_uuid, body.subject, body.message, current_user.id)
     return result
