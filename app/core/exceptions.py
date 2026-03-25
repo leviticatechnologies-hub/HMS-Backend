@@ -73,7 +73,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     Converts request validation errors to standardized error response.
     """
     # Public DCM demo form expects flat { success, error } per integration spec.
-    if request.url.path.startswith("/demo"):
+    if request.url.path.startswith("/demo") or request.url.path.startswith("/contact"):
         errs = exc.errors()
         if not errs:
             friendly = "Invalid request"

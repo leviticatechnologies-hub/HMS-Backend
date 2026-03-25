@@ -81,6 +81,7 @@ from app.models.support import SupportTicket
 
 # Public demo requests (marketing / DCM)
 from app.models.demo_request import DemoRequest
+from app.models.contact_message import ContactMessage
 
 __all__ = [
     # Base models
@@ -201,4 +202,5 @@ __all__ = [
 
     # Demo / DCM
     "DemoRequest",
+    "ContactMessage",
 ]

@@ -129,6 +129,8 @@ class Settings(BaseSettings):
     # Public demo request (DCM / marketing form)
     DEMO_REQUEST_NOTIFY_EMAIL: str = Field(default="", env="DEMO_REQUEST_NOTIFY_EMAIL")
     DEMO_REQUEST_SEND_CONFIRMATION: bool = Field(default=True, env="DEMO_REQUEST_SEND_CONFIRMATION")
+    CONTACT_MESSAGE_NOTIFY_EMAIL: str = Field(default="", env="CONTACT_MESSAGE_NOTIFY_EMAIL")
+    CONTACT_MESSAGE_SEND_ACK: bool = Field(default=True, env="CONTACT_MESSAGE_SEND_ACK")
 
     @model_validator(mode="after")
     def normalize_database_urls(self):

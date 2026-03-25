@@ -42,6 +42,7 @@ class TenantIsolationMiddleware(BaseHTTPMiddleware):
             "/api/v1/auth/patient/reset-password",
             "/api/v1/auth/hospitals",
             "/demo/request",
+            "/contact/send",
         }
         
         # Super Admin paths that bypass tenant isolation

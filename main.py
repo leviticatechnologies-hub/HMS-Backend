@@ -589,6 +589,7 @@ KEEP_TABLES = {
     "bills",
     "chain_of_custody",
     "compliance_exports",
+    "contact_messages",
     "departments",
     "demo_requests",
     "discharge_summaries",
@@ -868,8 +869,10 @@ app.include_router(api_router)
 
 # Public demo request (DCM) — mounted after main API
 from app.api.demo_public import router as demo_public_router
+from app.api.contact_public import router as contact_public_router
 
 app.include_router(demo_public_router)
+app.include_router(contact_public_router)
 
 
 if __name__ == "__main__":
