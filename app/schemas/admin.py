@@ -2,7 +2,7 @@
 Admin schemas for super admin and hospital admin operations.
 """
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 # ============================================================================
@@ -286,34 +286,187 @@ class HospitalDetailsOut(BaseModel):
     updated_at: str
 
 
-class DashboardOverviewOut(BaseModel):
-    """Dashboard overview response"""
-    dashboard_type: str
-    total_hospitals: int
-    active_hospitals: int
-    total_admins: int
-    active_admins: int
+# --- Hospital Admin dashboard (matches HospitalAdminService dashboard methods) ---
+
+
+class DashboardRecentActivityItem(BaseModel):
+    date: str
+    appointments: int
+    admissions: int
+
+
+class DashboardPatientMetrics(BaseModel):
     total_patients: int
+    active_patients: int
+    patient_activity_rate: float
+
+
+class DashboardStaffMetrics(BaseModel):
+    total_staff: int
+    total_doctors: int
+    active_doctors: int
+    doctor_utilization_rate: float
+
+
+class DashboardAppointmentMetrics(BaseModel):
+    todays_appointments: int
+    monthly_appointments: int
+    completed_appointments: int
+    appointment_completion_rate: float
+
+
+class DashboardBedMetrics(BaseModel):
+    total_beds: int
+    occupied_beds: int
+    available_beds: int
+    bed_occupancy_rate: float
+    current_admissions: int
+    todays_admissions: int
+    todays_discharges: int
+
+
+class DashboardFacilityMetrics(BaseModel):
+    total_departments: int
+    total_wards: int
+
+
+class DashboardRevenueMetrics(BaseModel):
+    monthly_consultation_revenue: float
+    monthly_payments: float
+    total_monthly_revenue: float
+
+
+class DashboardOverviewOut(BaseModel):
+    """Hospital-scoped dashboard overview (single hospital from JWT)."""
+
+    dashboard_type: str
+    generated_at: str
+    hospital_id: str
+    patient_metrics: DashboardPatientMetrics
+    staff_metrics: DashboardStaffMetrics
+    appointment_metrics: DashboardAppointmentMetrics
+    bed_metrics: DashboardBedMetrics
+    facility_metrics: DashboardFacilityMetrics
+    revenue_metrics: DashboardRevenueMetrics
+    recent_activity: List[DashboardRecentActivityItem]
+
+
+class StaffDoctorLast30Days(BaseModel):
     total_appointments: int
+    completed_appointments: int
+    completion_rate: float
+
+
+class StaffDoctorPerformanceItem(BaseModel):
+    doctor_id: str
+    name: str
+    specialization: Optional[str] = None
+    department: str
+    experience_years: Optional[int] = None
+    is_active: bool
+    last_30_days: StaffDoctorLast30Days
+
+
+class StaffRoleBreakdownItem(BaseModel):
+    role: str
+    total_count: int
+    active_count: int
+    inactive_count: int
+
+
+class StaffSummary(BaseModel):
+    total_staff: int
+    active_staff: int
+    total_doctors: int
+    total_departments: int
+
+
+class StaffDepartmentDistributionItem(BaseModel):
+    department_id: str
+    department_name: str
+    head_doctor: Optional[str] = None
+    doctor_count: int
+    is_active: bool
 
 
 class StaffStatisticsOut(BaseModel):
-    """Staff statistics response"""
+    """Hospital staff statistics report."""
+
     report_type: str
-    total_staff: int
-    active_staff: int
-    staff_by_role: Dict[str, int]
-    staff_by_department: Dict[str, int]
+    generated_at: str
+    hospital_id: str
+    summary: StaffSummary
+    role_breakdown: List[StaffRoleBreakdownItem]
+    doctor_performance: List[StaffDoctorPerformanceItem]
+    department_distribution: List[StaffDepartmentDistributionItem]
+
+
+class AppointmentDateRange(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    from_: str = Field(alias="from")
+    to: str
+
+
+class AppointmentOverallStatistics(BaseModel):
+    total_appointments: int
+    completed_appointments: int
+    cancelled_appointments: int
+    no_show_appointments: int
+    pending_appointments: int
+    emergency_appointments: int
+    completion_rate: float
+    cancellation_rate: float
+    no_show_rate: float
+
+
+class AppointmentPeriodSlice(BaseModel):
+    total: int
+    completed: int
+
+
+class AppointmentTimePeriodBreakdown(BaseModel):
+    today: AppointmentPeriodSlice
+    this_week: AppointmentPeriodSlice
+    this_month: AppointmentPeriodSlice
+
+
+class AppointmentDepartmentBreakdownItem(BaseModel):
+    department_name: str
+    department_id: str
+    total_appointments: int
+    completed_appointments: int
+    cancelled_appointments: int
+    no_show_appointments: int
+    completion_rate: float
+    revenue: float
+
+
+class AppointmentDailyTrendItem(BaseModel):
+    date: str
+    total_appointments: int
+    completed: int
+    cancelled: int
+    no_show: int
+
+
+class AppointmentTypeCountItem(BaseModel):
+    type: str
+    count: int
 
 
 class AppointmentStatisticsOut(BaseModel):
-    """Appointment statistics response"""
+    """Hospital appointment statistics report."""
+
     report_type: str
-    total_appointments: int
-    appointments_today: int
-    appointments_this_week: int
-    appointments_by_status: Dict[str, int]
-    appointments_by_department: Dict[str, int]
+    generated_at: str
+    hospital_id: str
+    date_range: AppointmentDateRange
+    overall_statistics: AppointmentOverallStatistics
+    time_period_breakdown: AppointmentTimePeriodBreakdown
+    department_breakdown: List[AppointmentDepartmentBreakdownItem]
+    daily_trends: List[AppointmentDailyTrendItem]
+    appointment_types: List[AppointmentTypeCountItem]
 
 
 class BedOccupancyReportOut(BaseModel):

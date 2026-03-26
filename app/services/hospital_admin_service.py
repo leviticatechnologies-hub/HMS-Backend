@@ -51,6 +51,13 @@ def _appointment_calendar_day(value: Any) -> Optional[date]:
     return None
 
 
+def _appointment_is_emergency(appointment: Any) -> bool:
+    """Appointment model uses appointment_type 'EMERGENCY'; optional is_emergency if added later."""
+    if getattr(appointment, "is_emergency", False):
+        return True
+    return (getattr(appointment, "appointment_type", None) or "").strip().upper() == "EMERGENCY"
+
+
 class HospitalAdminService:
     """Service class for Hospital Admin operations"""
     
@@ -1296,7 +1303,7 @@ class HospitalAdminService:
                 "appointment_type": appointment.appointment_type,
                 "chief_complaint": appointment.chief_complaint,
                 "notes": appointment.notes,
-                "is_emergency": appointment.is_emergency,
+                "is_emergency": _appointment_is_emergency(appointment),
                 "consultation_fee": float(appointment.consultation_fee) if appointment.consultation_fee else None,
                 "created_at": appointment.created_at.isoformat(),
                 "updated_at": appointment.updated_at.isoformat()
@@ -1390,7 +1397,7 @@ class HospitalAdminService:
             "chief_complaint": appointment.chief_complaint,
             "symptoms": appointment.symptoms,
             "notes": appointment.notes,
-            "is_emergency": appointment.is_emergency,
+            "is_emergency": _appointment_is_emergency(appointment),
             "consultation_fee": float(appointment.consultation_fee) if appointment.consultation_fee else None,
             "payment_status": appointment.payment_status,
             "created_at": appointment.created_at.isoformat(),
@@ -3866,7 +3873,7 @@ class HospitalAdminService:
         type_breakdown_list.sort(key=lambda x: x["count"], reverse=True)
         
         # Emergency appointments
-        emergency_appointments = len([a for a in appointments if a.is_emergency])
+        emergency_appointments = len([a for a in appointments if _appointment_is_emergency(a)])
         
         return {
             "report_type": "appointment_statistics",
