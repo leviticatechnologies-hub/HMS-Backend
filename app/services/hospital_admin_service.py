@@ -527,9 +527,14 @@ class HospitalAdminService:
         )
 
         profiles_created: list[str] = []
-        spec = (staff_data.get("doctor_specialization") or "").strip() or "General"
+        spec = (
+            (staff_data.get("doctor_specialization") or "").strip()
+            or (staff_data.get("specialization") or "").strip()
+            or "General"
+        )
         if role_name == UserRole.DOCTOR:
             extra_md["doctor_specialization"] = spec
+            extra_md["specialization"] = spec
             user.user_metadata = extra_md
 
         if role_name == UserRole.DOCTOR and department:
@@ -703,6 +708,13 @@ class HospitalAdminService:
             )
             md = user.user_metadata or {}
             joining = md.get("joining_date")
+            specialization = None
+            if primary_role == UserRole.DOCTOR:
+                specialization = (
+                    md.get("doctor_specialization")
+                    or md.get("specialization")
+                    or "General"
+                )
             
             # Generate staff name with appropriate title
             staff_name = f"{user.first_name} {user.last_name}"
@@ -726,6 +738,7 @@ class HospitalAdminService:
                 "shift_timing": md.get("shift_timing"),
                 "hire_date": joining,
                 "joining_date": joining,
+                "specialization": specialization,
                 "status": user.status,
                 "is_active": user.is_active,
                 "email_verified": user.email_verified,
@@ -821,6 +834,7 @@ class HospitalAdminService:
                 profile_info.get("specialization")
                 or md.get("doctor_specialization")
                 or md.get("specialization")
+                or "General"
             )
         
         return {
