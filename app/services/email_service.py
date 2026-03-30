@@ -1,7 +1,11 @@
+# app/services/email_service.py
+
 """
-Email service for sending OTP, notification, and document (invoice/receipt) emails.
+Email service using SendGrid SMTP - Render-optimized
 """
 import aiosmtplib
+import asyncio
+import base64
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
@@ -14,7 +18,9 @@ logger = logging.getLogger(__name__)
 
 
 class EmailService:
-    """Service for sending emails"""
+    """Service for sending emails via SendGrid SMTP"""
+    
+    SENDGRID_PORTS = [2525, 587, 465]
     
     def __init__(self):
         self.smtp_host = settings.SMTP_HOST
@@ -22,40 +28,109 @@ class EmailService:
         self.smtp_user = settings.SMTP_USER
         self.smtp_pass = settings.SMTP_PASS
         self.email_from = settings.EMAIL_FROM
+        
+        if not self.smtp_user or not self.smtp_pass:
+            logger.warning("⚠️  SMTP credentials not configured")
+        
+        logger.info(
+            f"EmailService initialized:\n"
+            f"  Host: {self.smtp_host}:{self.smtp_port}\n"
+            f"  User: {self.smtp_user}\n"
+            f"  Configured: {bool(self.smtp_user and self.smtp_pass)}"
+        )
     
-    async def send_email(self, to_email: str, subject: str, html_content: str, text_content: Optional[str] = None):
-        """Send email using SMTP"""
+    def _get_tls_settings(self, port: int) -> dict:
+        """Get TLS settings for each port (tested on Render)"""
+        if port == 2525:
+            # Port 2525: Opportunistic TLS (auto-upgrade, works on Render)
+            return {"use_tls": False, "start_tls": False}
+        elif port == 465:
+            # Port 465: Implicit SSL/TLS
+            return {"use_tls": True, "start_tls": False}
+        else:
+            # Port 587: STARTTLS
+            return {"use_tls": False, "start_tls": True}
+    
+    async def _try_send_with_port(
+        self,
+        message,
+        port: int,
+        timeout: int = 10
+    ) -> tuple[bool, str]:
+        """Try sending email with specific port"""
         try:
-            # Create message
+            tls_settings = self._get_tls_settings(port)
+            
+            logger.info(f"📡 Trying port {port}...")
+            
+            await asyncio.wait_for(
+                aiosmtplib.send(
+                    message,
+                    hostname=self.smtp_host,
+                    port=port,
+                    use_tls=tls_settings["use_tls"],
+                    start_tls=tls_settings["start_tls"],
+                    username=self.smtp_user,
+                    password=self.smtp_pass,
+                    timeout=timeout,
+                ),
+                timeout=timeout + 5
+            )
+            
+            logger.info(f"✅ Email sent via port {port}")
+            return True, None
+            
+        except Exception as e:
+            error = f"{type(e).__name__}: {str(e)}"
+            logger.warning(f"❌ Port {port} failed: {error}")
+            return False, error
+    
+    async def send_email(
+        self, 
+        to_email: str, 
+        subject: str, 
+        html_content: str, 
+        text_content: Optional[str] = None,
+        timeout: int = 15
+    ) -> bool:
+        """Send email using SendGrid SMTP"""
+        try:
+            logger.info(f"📧 Sending to {to_email}: {subject}")
+            
+            if not self.smtp_user or not self.smtp_pass:
+                logger.error("❌ SMTP credentials missing")
+                return False
+            
             message = MIMEMultipart("alternative")
             message["Subject"] = subject
             message["From"] = self.email_from
             message["To"] = to_email
             
-            # Add text content
             if text_content:
-                text_part = MIMEText(text_content, "plain")
-                message.attach(text_part)
+                message.attach(MIMEText(text_content, "plain"))
+            message.attach(MIMEText(html_content, "html"))
             
-            # Add HTML content
-            html_part = MIMEText(html_content, "html")
-            message.attach(html_part)
+            # Try primary port
+            success, error = await self._try_send_with_port(message, self.smtp_port, timeout)
+            if success:
+                return True
             
-            # Send email
-            await aiosmtplib.send(
-                message,
-                hostname=self.smtp_host,
-                port=self.smtp_port,
-                start_tls=True,
-                username=self.smtp_user,
-                password=self.smtp_pass,
-            )
+            # Try fallback ports
+            logger.warning(f"⚠️  Port {self.smtp_port} failed, trying alternatives...")
+            for alt_port in self.SENDGRID_PORTS:
+                if alt_port == self.smtp_port:
+                    continue
+                success, _ = await self._try_send_with_port(message, alt_port, timeout)
+                if success:
+                    logger.info(f"✅ Sent via fallback port {alt_port}")
+                    return True
             
-            logger.info(f"Email sent successfully to {to_email}")
+            logger.error(f"❌ All ports failed for {to_email}")
+            return False
             
         except Exception as e:
-            logger.error(f"Failed to send email to {to_email}: {str(e)}")
-            raise
+            logger.error(f"❌ Send failed: {e}")
+            return False
 
     async def send_document_email(
         self,
@@ -65,141 +140,100 @@ class EmailService:
         pdf_bytes: bytes,
         filename: str = "document.pdf",
         text_fallback: Optional[str] = None,
-    ):
-        """Send email with PDF attachment (e.g. invoice or receipt)."""
-        message = MIMEMultipart()
-        message["Subject"] = subject
-        message["From"] = self.email_from
-        message["To"] = to_email
-        if text_fallback:
-            message.attach(MIMEText(text_fallback, "plain"))
-        message.attach(MIMEText(body_html, "html"))
-        attachment = MIMEApplication(pdf_bytes, _subtype="pdf")
-        attachment.add_header("Content-Disposition", "attachment", filename=filename)
-        message.attach(attachment)
-        await aiosmtplib.send(
-            message,
-            hostname=self.smtp_host,
-            port=self.smtp_port,
-            start_tls=True,
-            username=self.smtp_user,
-            password=self.smtp_pass,
-        )
-        logger.info(f"Document email sent to {to_email} (attachment: {filename})")
+        timeout: int = 30
+    ) -> bool:
+        """Send email with PDF attachment"""
+        try:
+            logger.info(f"📎 Sending document to {to_email}: {filename}")
+            
+            if not self.smtp_user or not self.smtp_pass:
+                logger.error("❌ SMTP credentials missing")
+                return False
+            
+            message = MIMEMultipart()
+            message["Subject"] = subject
+            message["From"] = self.email_from
+            message["To"] = to_email
+            
+            if text_fallback:
+                message.attach(MIMEText(text_fallback, "plain"))
+            message.attach(MIMEText(body_html, "html"))
+            
+            pdf_attachment = MIMEApplication(pdf_bytes, _subtype="pdf")
+            pdf_attachment.add_header("Content-Disposition", "attachment", filename=filename)
+            message.attach(pdf_attachment)
+            
+            tls_settings = self._get_tls_settings(self.smtp_port)
+            
+            await asyncio.wait_for(
+                aiosmtplib.send(
+                    message,
+                    hostname=self.smtp_host,
+                    port=self.smtp_port,
+                    use_tls=tls_settings["use_tls"],
+                    start_tls=tls_settings["start_tls"],
+                    username=self.smtp_user,
+                    password=self.smtp_pass,
+                    timeout=timeout,
+                ),
+                timeout=timeout + 5
+            )
+            
+            logger.info(f"✅ Document sent to {to_email}")
+            return True
+                
+        except Exception as e:
+            logger.error(f"❌ Document send failed: {e}")
+            return False
 
     async def send_verification_email(self, email: str, otp_code: str, first_name: str):
         """Send email verification OTP"""
-        subject = "Verify Your Email - Hospital Management System"
-        
-        html_content = f"""
+        html = f"""
         <!DOCTYPE html>
         <html>
-        <head>
-            <meta charset="utf-8">
-            <title>Email Verification</title>
-        </head>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <div style="background-color: #f8f9fa; padding: 30px; border-radius: 10px;">
-                <h2 style="color: #2c3e50; text-align: center;">Email Verification</h2>
-                
-                <p>Dear {first_name},</p>
-                
-                <p>Thank you for registering with our Hospital Management System. To complete your registration, please verify your email address using the code below:</p>
-                
-                <div style="background-color: #ffffff; padding: 20px; border-radius: 5px; text-align: center; margin: 20px 0;">
-                    <h1 style="color: #3498db; font-size: 32px; letter-spacing: 5px; margin: 0;">{otp_code}</h1>
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+                <h1 style="color: white; margin: 0;">🏥 Hospital Management</h1>
+            </div>
+            <div style="background: #f8f9fa; padding: 40px 30px; border-radius: 0 0 10px 10px;">
+                <h2 style="color: #2c3e50; margin-top: 0;">Email Verification</h2>
+                <p>Hi <strong>{first_name}</strong>,</p>
+                <p>Your verification code:</p>
+                <div style="background: white; padding: 25px; border-radius: 8px; text-align: center; margin: 20px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                    <div style="font-size: 36px; font-weight: bold; color: #667eea; letter-spacing: 8px; font-family: monospace;">{otp_code}</div>
                 </div>
-                
-                <p><strong>Important:</strong></p>
-                <ul>
-                    <li>This code will expire in 10 minutes</li>
-                    <li>Do not share this code with anyone</li>
-                    <li>If you didn't request this verification, please ignore this email</li>
-                </ul>
-                
-                <p>If you have any questions, please contact our support team.</p>
-                
-                <p>Best regards,<br>Hospital Management System Team</p>
+                <p style="color: #666;">Expires in 10 minutes.</p>
+                <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0;">
+                <p>Best regards,<br><strong>Hospital Management Team</strong></p>
             </div>
         </body>
         </html>
         """
-        
-        text_content = f"""
-        Email Verification
-        
-        Dear {first_name},
-        
-        Thank you for registering with our Hospital Management System. 
-        To complete your registration, please verify your email address using this code:
-        
-        {otp_code}
-        
-        This code will expire in 10 minutes.
-        Do not share this code with anyone.
-        
-        Best regards,
-        Hospital Management System Team
-        """
-        
-        await self.send_email(email, subject, html_content, text_content)
+        text = f"Hi {first_name},\n\nYour verification code: {otp_code}\n\nExpires in 10 minutes.\n\nBest regards,\nHospital Management Team"
+        return await self.send_email(email, "Verify Your Email - Hospital Management", html, text)
     
     async def send_password_reset_email(self, email: str, otp_code: str, first_name: str):
         """Send password reset OTP"""
-        subject = "Password Reset - Hospital Management System"
-        
-        html_content = f"""
+        html = f"""
         <!DOCTYPE html>
         <html>
-        <head>
-            <meta charset="utf-8">
-            <title>Password Reset</title>
-        </head>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <div style="background-color: #f8f9fa; padding: 30px; border-radius: 10px;">
-                <h2 style="color: #e74c3c; text-align: center;">Password Reset Request</h2>
-                
-                <p>Dear {first_name},</p>
-                
-                <p>We received a request to reset your password. Use the code below to reset your password:</p>
-                
-                <div style="background-color: #ffffff; padding: 20px; border-radius: 5px; text-align: center; margin: 20px 0;">
-                    <h1 style="color: #e74c3c; font-size: 32px; letter-spacing: 5px; margin: 0;">{otp_code}</h1>
+            <div style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+                <h1 style="color: white; margin: 0;">🔐 Password Reset</h1>
+            </div>
+            <div style="background: #f8f9fa; padding: 40px 30px; border-radius: 0 0 10px 10px;">
+                <h2 style="color: #e74c3c; margin-top: 0;">Password Reset Request</h2>
+                <p>Hi <strong>{first_name}</strong>,</p>
+                <p>Your reset code:</p>
+                <div style="background: white; padding: 25px; border-radius: 8px; text-align: center; margin: 20px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                    <div style="font-size: 36px; font-weight: bold; color: #e74c3c; letter-spacing: 8px; font-family: monospace;">{otp_code}</div>
                 </div>
-                
-                <p><strong>Security Notice:</strong></p>
-                <ul>
-                    <li>This code will expire in 10 minutes</li>
-                    <li>Do not share this code with anyone</li>
-                    <li>If you didn't request this reset, please ignore this email</li>
-                    <li>Your password will remain unchanged until you complete the reset process</li>
-                </ul>
-                
-                <p>If you continue to have problems, please contact our support team.</p>
-                
-                <p>Best regards,<br>Hospital Management System Team</p>
+                <p style="color: #666;">Expires in 10 minutes.</p>
+                <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0;">
+                <p>Best regards,<br><strong>Hospital Management Team</strong></p>
             </div>
         </body>
         </html>
         """
-        
-        text_content = f"""
-        Password Reset Request
-        
-        Dear {first_name},
-        
-        We received a request to reset your password. 
-        Use this code to reset your password:
-        
-        {otp_code}
-        
-        This code will expire in 10 minutes.
-        Do not share this code with anyone.
-        
-        If you didn't request this reset, please ignore this email.
-        
-        Best regards,
-        Hospital Management System Team
-        """
-        
-        await self.send_email(email, subject, html_content, text_content)
+        text = f"Hi {first_name},\n\nYour password reset code: {otp_code}\n\nExpires in 10 minutes.\n\nBest regards,\nHospital Management Team"
+        return await self.send_email(email, "Password Reset - Hospital Management", html, text)
