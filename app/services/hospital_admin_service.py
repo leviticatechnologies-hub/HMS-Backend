@@ -102,6 +102,40 @@ class HospitalAdminService:
         """Create a new department within the hospital"""
         from sqlalchemy import func
 
+        def _normalize_list(v):
+            if v is None:
+                return None
+            if isinstance(v, list):
+                out = []
+                for item in v:
+                    if item is None:
+                        continue
+                    s = str(item).strip()
+                    if not s or s == "-":
+                        continue
+                    out.append(s)
+                return out
+            if isinstance(v, str):
+                s = v.strip()
+                if not s or s == "-":
+                    return []
+                parts = []
+                for chunk in s.replace("\r", "\n").split("\n"):
+                    for p in chunk.split(","):
+                        p = p.strip()
+                        if p and p != "-":
+                            parts.append(p)
+                return parts
+            s = str(v).strip()
+            return [] if not s or s == "-" else [s]
+
+        # Persist UI-only fields inside settings (Department table doesn't have columns for these yet).
+        settings = dict(department_data.get("settings") or {})
+        if department_data.get("specializations") is not None:
+            settings["specializations"] = _normalize_list(department_data.get("specializations")) or []
+        if department_data.get("equipment_list") is not None:
+            settings["equipment_list"] = _normalize_list(department_data.get("equipment_list")) or []
+
         # Check if department code already exists in this hospital
         existing_dept = await self.db.execute(
             select(Department).where(
@@ -144,7 +178,7 @@ class HospitalAdminService:
             is_icu=department_data.get('is_icu', False),
             bed_capacity=department_data.get('bed_capacity', 0),
             is_24x7=department_data.get('is_24x7', False),
-            settings=department_data.get('settings', {})
+            settings=settings,
         )
         
         self.db.add(department)
@@ -307,6 +341,33 @@ class HospitalAdminService:
     async def update_department(self, department_id: uuid.UUID, update_data: Dict[str, Any]) -> Dict[str, Any]:
         """Update department information"""
         from sqlalchemy import func
+
+        def _normalize_list(v):
+            if v is None:
+                return None
+            if isinstance(v, list):
+                out = []
+                for item in v:
+                    if item is None:
+                        continue
+                    s = str(item).strip()
+                    if not s or s == "-":
+                        continue
+                    out.append(s)
+                return out
+            if isinstance(v, str):
+                s = v.strip()
+                if not s or s == "-":
+                    return []
+                parts = []
+                for chunk in s.replace("\r", "\n").split("\n"):
+                    for p in chunk.split(","):
+                        p = p.strip()
+                        if p and p != "-":
+                            parts.append(p)
+                return parts
+            s = str(v).strip()
+            return [] if not s or s == "-" else [s]
         # Get department
         result = await self.db.execute(
             select(Department).where(
@@ -359,6 +420,20 @@ class HospitalAdminService:
             del update_data["head_of_department"]
         
         # Update fields
+        # Merge settings for specializations/equipment_list if provided by UI.
+        if "specializations" in update_data or "equipment_list" in update_data or "settings" in update_data:
+            settings = dict((department.settings or {}))
+            if "settings" in update_data and isinstance(update_data.get("settings"), dict):
+                settings.update(update_data["settings"])
+            if "specializations" in update_data:
+                settings["specializations"] = _normalize_list(update_data.get("specializations")) or []
+            if "equipment_list" in update_data:
+                settings["equipment_list"] = _normalize_list(update_data.get("equipment_list")) or []
+            department.settings = settings
+            update_data.pop("settings", None)
+            update_data.pop("specializations", None)
+            update_data.pop("equipment_list", None)
+
         for field, value in update_data.items():
             if hasattr(department, field) and value is not None:
                 setattr(department, field, value)
