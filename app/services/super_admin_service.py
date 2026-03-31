@@ -898,7 +898,34 @@ class SuperAdminService:
             
             self.db.add(subscription)
             message = "Hospital subscription created successfully"
-        
+
+        # If the hospital is active, unblock hospital admins/staff that were blocked
+        # due to hospital deactivation so they can login again (subscription gating is enforced at login).
+        if hospital.is_active and hospital.status == HospitalStatus.ACTIVE:
+            users_q = (
+                select(User)
+                .options(selectinload(User.roles))
+                .where(User.hospital_id == hospital_id)
+            )
+            users_result = await self.db.execute(users_q)
+            users = users_result.scalars().all()
+
+            allowed_roles = {
+                UserRole.HOSPITAL_ADMIN,
+                UserRole.DOCTOR,
+                UserRole.NURSE,
+                UserRole.RECEPTIONIST,
+                UserRole.PHARMACIST,
+                UserRole.LAB_TECH,
+            }
+
+            for u in users:
+                if u.status != UserStatus.BLOCKED:
+                    continue
+                role_names = {r.name for r in (u.roles or [])}
+                if role_names.intersection(allowed_roles):
+                    u.status = UserStatus.ACTIVE
+
         await self.db.commit()
         
         return {

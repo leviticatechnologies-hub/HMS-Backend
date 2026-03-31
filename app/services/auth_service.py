@@ -29,6 +29,7 @@ from app.core.config import settings
 from app.services.email_service import EmailService
 from app.services.otp_service import otp_service
 from app.core.enums import UserRole, UserStatus
+from app.core.enums import HospitalStatus, SubscriptionStatus
 
 
 class EmailDomainValidator:
@@ -132,14 +133,46 @@ class AuthService:
         logger.debug(f"DEBUG: Database session: {self.db}")
         logger.debug(f"DEBUG: Hospital data: {hospital_data}")
         
-        # Check if hospital already exists
-        existing_hospital = await self.db.execute(
-            select(Hospital).where(Hospital.registration_number == hospital_data['registration_number'])
+        # Check if hospital already exists (by registration number).
+        # If it exists but is inactive (soft-deleted), reactivate it so old staff/admin
+        # credentials continue to work once subscription is assigned again.
+        existing_hospital_result = await self.db.execute(
+            select(Hospital).where(Hospital.registration_number == hospital_data["registration_number"])
         )
-        if existing_hospital.scalar_one_or_none():
+        existing_hospital = existing_hospital_result.scalar_one_or_none()
+        if existing_hospital:
+            if not getattr(existing_hospital, "is_active", True) or getattr(existing_hospital, "status", None) == HospitalStatus.INACTIVE:
+                existing_hospital.name = hospital_data["name"]
+                existing_hospital.email = hospital_data["email"]
+                existing_hospital.phone = hospital_data["phone"]
+                existing_hospital.address = hospital_data["address"]
+                existing_hospital.city = hospital_data["city"]
+                existing_hospital.state = hospital_data["state"]
+                existing_hospital.country = hospital_data["country"]
+                existing_hospital.pincode = hospital_data["pincode"]
+                existing_hospital.status = HospitalStatus.ACTIVE
+                existing_hospital.is_active = True
+
+                # Preserve existing settings but ensure the hospital domain is present.
+                existing_settings = existing_hospital.settings or {}
+                approved = list(existing_settings.get("approved_email_domains", []) or [])
+                domain = hospital_data["email"].split("@")[1]
+                if domain.lower() not in [d.lower() for d in approved]:
+                    approved.append(domain)
+                existing_settings["approved_email_domains"] = approved
+                existing_hospital.settings = existing_settings
+
+                await self.db.commit()
+                return {
+                    "hospital_id": str(existing_hospital.id),
+                    "name": existing_hospital.name,
+                    "registration_number": existing_hospital.registration_number,
+                    "message": "Hospital reactivated successfully",
+                }
+
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail={"code": "HOSPITAL_EXISTS", "message": "Hospital with this registration number already exists"}
+                detail={"code": "HOSPITAL_EXISTS", "message": "Hospital with this registration number already exists"},
             )
         
         # Create hospital
@@ -557,6 +590,72 @@ class AuthService:
         logger.debug("DEBUG: Login successful, generating tokens")
         # Generate tokens
         return await self._generate_auth_response(user)
+
+    async def _enforce_hospital_login_access(self, user: User, user_roles: List[str]) -> None:
+        """
+        Enforce hospital active status + subscription for hospital-scoped (non-patient) users.
+
+        Rules:
+        - SUPER_ADMIN bypasses all checks.
+        - If user has a hospital_id:
+            - Hospital must exist and be active (not soft-deleted).
+            - Hospital must have an ACTIVE, non-expired subscription.
+            - If subscription is missing/expired/suspended/cancelled -> block login.
+        """
+        if "SUPER_ADMIN" in (user_roles or []):
+            return
+
+        if not user.hospital_id:
+            return
+
+        from app.models.tenant import HospitalSubscription, Hospital
+        from datetime import datetime as _dt
+
+        hosp_result = await self.db.execute(
+            select(Hospital).where(Hospital.id == user.hospital_id)
+        )
+        hospital = hosp_result.scalar_one_or_none()
+        if not hospital or not hospital.is_active or hospital.status == HospitalStatus.INACTIVE:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "HOSPITAL_INACTIVE",
+                    "message": "Hospital is inactive. Please contact support.",
+                },
+            )
+
+        sub_result = await self.db.execute(
+            select(HospitalSubscription).where(HospitalSubscription.hospital_id == user.hospital_id)
+        )
+        subscription = sub_result.scalar_one_or_none()
+        if not subscription:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail={
+                    "code": "SUBSCRIPTION_REQUIRED",
+                    "message": "Subscription plan required to login.",
+                },
+            )
+
+        now = _dt.utcnow()
+        if subscription.end_date and subscription.end_date < now:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail={
+                    "code": "SUBSCRIPTION_EXPIRED",
+                    "message": f"Subscription expired on {subscription.end_date.strftime('%Y-%m-%d')}. Renew to continue.",
+                },
+            )
+
+        if subscription.status in (SubscriptionStatus.SUSPENDED, SubscriptionStatus.CANCELLED, SubscriptionStatus.EXPIRED):
+            status_str = str(subscription.status)
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail={
+                    "code": f"SUBSCRIPTION_{status_str}",
+                    "message": f"Subscription is {status_str.lower()}.",
+                },
+            )
     
     async def hospital_admin_login(self, email: str, password: str) -> Dict[str, Any]:
         """Hospital Admin login - no OTP required"""
@@ -594,6 +693,16 @@ class AuthService:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail={"code": "AUTH_001", "message": "Invalid credentials"}
             )
+
+        # Account must be active (hospital delete blocks users).
+        if user.status != UserStatus.ACTIVE:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "USER_INACTIVE", "message": "Account is inactive. Contact your administrator."},
+            )
+
+        # Hospital + subscription gating (covers new hospitals too).
+        await self._enforce_hospital_login_access(user, user_roles)
         
         logger.debug("DEBUG: Login successful, generating tokens")
         # Generate tokens
@@ -625,6 +734,14 @@ class AuthService:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail={"code": "AUTH_001", "message": "Invalid credentials"}
             )
+
+        if user.status != UserStatus.ACTIVE:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "USER_INACTIVE", "message": "Account is inactive. Contact your administrator."},
+            )
+
+        await self._enforce_hospital_login_access(user, user_roles)
         
         # Generate tokens
         return await self._generate_auth_response(user)
@@ -672,6 +789,17 @@ class AuthService:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail={"code": "AUTH_001", "message": "Invalid credentials"}
             )
+
+        # Block non-active accounts (hospital users are soft-blocked when hospital is deleted/deactivated).
+        if user.status != UserStatus.ACTIVE and "SUPER_ADMIN" not in user_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "USER_INACTIVE", "message": "Account is inactive. Contact your administrator."},
+            )
+
+        # Enforce hospital active + subscription for hospital-scoped logins
+        # (covers new hospitals too).
+        await self._enforce_hospital_login_access(user, user_roles)
 
         return await self._generate_auth_response(user)
     
