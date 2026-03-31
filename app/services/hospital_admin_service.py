@@ -100,16 +100,18 @@ class HospitalAdminService:
     
     async def create_department(self, department_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new department within the hospital"""
+        from sqlalchemy import func
+
         # Check if department code already exists in this hospital
         existing_dept = await self.db.execute(
             select(Department).where(
                 and_(
                     Department.hospital_id == self.hospital_id,
-                    Department.code == department_data['code']
+                    func.lower(Department.code) == str(department_data["code"]).strip().lower(),
                 )
-            )
+            ).limit(1)
         )
-        if existing_dept.scalar_one_or_none():
+        if existing_dept.scalars().first():
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={"code": "DEPARTMENT_CODE_EXISTS", "message": "Department with this code already exists"}
@@ -132,7 +134,7 @@ class HospitalAdminService:
             id=uuid.uuid4(),
             hospital_id=self.hospital_id,
             name=department_data['name'],
-            code=department_data['code'],
+            code=str(department_data['code']).strip().upper(),
             description=department_data.get('description'),
             head_doctor_id=head_doctor_id,
             location=department_data.get('location'),
@@ -4173,7 +4175,7 @@ class HospitalAdminService:
         first_name = name_parts[0]
         last_name = " ".join(name_parts[1:])  # Handle multiple last names
         
-        # Try exact match first
+        # Try exact match first (but never crash if multiple matches exist).
         query = select(User).options(selectinload(User.roles)).where(
             and_(
                 User.hospital_id == self.hospital_id,
@@ -4181,14 +4183,14 @@ class HospitalAdminService:
                 User.first_name.ilike(first_name),
                 User.last_name.ilike(last_name)
             )
-        )
+        ).limit(1)
         result = await self.db.execute(query)
-        doctor = result.scalar_one_or_none()
+        doctor = result.scalars().first()
         
         if doctor:
             return doctor
         
-        # If exact match fails, try partial match
+        # If exact match fails, try partial match (limit to one deterministic row).
         query = select(User).options(selectinload(User.roles)).where(
             and_(
                 User.hospital_id == self.hospital_id,
@@ -4196,9 +4198,9 @@ class HospitalAdminService:
                 User.first_name.ilike(f"%{first_name}%"),
                 User.last_name.ilike(f"%{last_name}%")
             )
-        )
+        ).limit(1)
         result = await self.db.execute(query)
-        return result.scalar_one_or_none()
+        return result.scalars().first()
     
     async def _get_hospital_department(self, department_id: uuid.UUID) -> Optional[Department]:
         """Get department by ID within this hospital"""
