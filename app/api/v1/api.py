@@ -50,6 +50,16 @@ except ImportError as e:
     logger.error(f"✗ Failed to load hospital admin routers: {e}")
 
 # ============================================================================
+# 3.5 SUPPORT TICKETS (Staff + Hospital Admin create)
+# ============================================================================
+try:
+    from app.api.v1.routers.support.tickets import router as support_tickets_router
+    api_router.include_router(support_tickets_router)
+    logger.info("✓ Support Tickets router loaded (/api/v1/support)")
+except ImportError as e:
+    logger.error(f"✗ Failed to load support tickets router: {e}")
+
+# ============================================================================
 # 4. DOCTOR MODULE
 # ============================================================================
 try:

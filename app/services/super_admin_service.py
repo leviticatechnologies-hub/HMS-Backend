@@ -1142,6 +1142,436 @@ class SuperAdminService:
             },
         }
 
+    # ============================================================================
+    # SUPER ADMIN - ANALYTICS REPORTS (Subscription / Financial / Performance)
+    # ============================================================================
+
+    async def get_subscription_analytics(
+        self,
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
+        plan_name: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Subscription lifecycle analytics for dashboard.
+        Uses existing HospitalSubscription + Plan models.
+        """
+        from datetime import datetime as _dt, timezone as _tz
+        from sqlalchemy import case
+
+        now = _dt.now(_tz.utc)
+        if date_from and getattr(date_from, "tzinfo", None) is None:
+            date_from = date_from.replace(tzinfo=_tz.utc)
+        if date_to and getattr(date_to, "tzinfo", None) is None:
+            date_to = date_to.replace(tzinfo=_tz.utc)
+
+        # Core rows for table + summary
+        q = (
+            select(Hospital, HospitalSubscription, SubscriptionPlanModel)
+            .join(HospitalSubscription, HospitalSubscription.hospital_id == Hospital.id)
+            .join(SubscriptionPlanModel, SubscriptionPlanModel.id == HospitalSubscription.plan_id)
+        )
+        if plan_name:
+            q = q.where(SubscriptionPlanModel.name == plan_name)
+        q = q.order_by(Hospital.name.asc())
+        r = await self.db.execute(q)
+        rows = r.all()
+
+        subscriptions: List[Dict[str, Any]] = []
+        active = expired = cancelled = suspended = 0
+
+        for hospital, sub, plan in rows:
+            # Determine expiry in a timezone-safe way
+            end_dt = sub.end_date
+            if end_dt and getattr(end_dt, "tzinfo", None) is None:
+                end_dt = end_dt.replace(tzinfo=_tz.utc)
+            if end_dt and end_dt < now:
+                effective_status = SubscriptionStatus.EXPIRED
+            else:
+                effective_status = sub.status
+            if status and str(effective_status).upper() != str(status).upper():
+                continue
+
+            if effective_status == SubscriptionStatus.ACTIVE:
+                active += 1
+            elif effective_status == SubscriptionStatus.EXPIRED:
+                expired += 1
+            elif effective_status == SubscriptionStatus.CANCELLED:
+                cancelled += 1
+            elif effective_status == SubscriptionStatus.SUSPENDED:
+                suspended += 1
+
+            # Amount paid: if you later add invoicing, wire it here.
+            amount_paid = 0
+            billing_cycle = "yearly"
+            if plan and float(plan.monthly_price or 0) > 0 and float(plan.yearly_price or 0) <= 0:
+                billing_cycle = "monthly"
+
+            subscriptions.append(
+                {
+                    "hospitalName": hospital.name,
+                    "planType": plan.display_name if plan else None,
+                    "subscriptionStartDate": sub.start_date.date().isoformat() if sub.start_date else None,
+                    "subscriptionEndDate": sub.end_date.date().isoformat() if sub.end_date else None,
+                    "status": str(effective_status).lower(),
+                    "billingCycle": billing_cycle,
+                    "amountPaid": amount_paid,
+                    "renewalDate": sub.end_date.date().isoformat() if sub.end_date else None,
+                    "autoRenewal": bool(sub.auto_renew),
+                }
+            )
+
+        total_hospitals = len({row[0].id for row in rows})
+
+        # Monthly growth chart (based on subscription created_at)
+        # date_trunc is Postgres; works on Render. For SQLite dev, it may differ.
+        growth_rows = []
+        try:
+            gq = (
+                select(
+                    func.date_trunc("month", HospitalSubscription.created_at).label("m"),
+                    func.count(HospitalSubscription.id).label("new_subscriptions"),
+                )
+                .where(
+                    *[
+                        cond
+                        for cond in [
+                            (HospitalSubscription.created_at >= date_from) if date_from else None,
+                            (HospitalSubscription.created_at <= date_to) if date_to else None,
+                        ]
+                        if cond is not None
+                    ]
+                )
+                .group_by(func.date_trunc("month", HospitalSubscription.created_at))
+                .order_by(func.date_trunc("month", HospitalSubscription.created_at))
+            )
+            gr = await self.db.execute(gq)
+            for m, new_subscriptions in gr.all():
+                growth_rows.append(
+                    {
+                        "month": m.strftime("%b") if m else None,
+                        "newSubscriptions": int(new_subscriptions or 0),
+                        "renewals": 0,
+                        "churned": 0,
+                        "netGrowth": int(new_subscriptions or 0),
+                    }
+                )
+        except Exception:
+            growth_rows = []
+
+        # Plan distribution
+        plans_rows = []
+        pq = (
+            select(
+                SubscriptionPlanModel.display_name,
+                func.count(HospitalSubscription.id).label("hospitals"),
+            )
+            .join(HospitalSubscription, HospitalSubscription.plan_id == SubscriptionPlanModel.id)
+            .group_by(SubscriptionPlanModel.display_name)
+            .order_by(func.count(HospitalSubscription.id).desc())
+        )
+        pr = await self.db.execute(pq)
+        for display_name, hospitals_count in pr.all():
+            plans_rows.append(
+                {
+                    "plan": display_name,
+                    "hospitals": int(hospitals_count or 0),
+                    "revenue": 0,
+                }
+            )
+
+        # Churn analysis chart (counts expired/cancelled by month based on end_date)
+        churn_rows = []
+        try:
+            cq = (
+                select(
+                    func.date_trunc("month", HospitalSubscription.end_date).label("m"),
+                    func.count(
+                        case(
+                            (HospitalSubscription.status == SubscriptionStatus.CANCELLED, 1),
+                            else_=None,
+                        )
+                    ).label("cancellations"),
+                    func.count(
+                        case(
+                            (HospitalSubscription.end_date < now, 1),
+                            else_=None,
+                        )
+                    ).label("expired"),
+                )
+                .where(HospitalSubscription.end_date.is_not(None))
+                .group_by(func.date_trunc("month", HospitalSubscription.end_date))
+                .order_by(func.date_trunc("month", HospitalSubscription.end_date))
+            )
+            cr = await self.db.execute(cq)
+            for m, cancellations, expired_cnt in cr.all():
+                cancellations = int(cancellations or 0)
+                expired_cnt = int(expired_cnt or 0)
+                base = max(total_hospitals, 1)
+                churn_rate_m = round(((cancellations + expired_cnt) / base) * 100, 2)
+                churn_rows.append(
+                    {
+                        "month": m.strftime("%b") if m else None,
+                        "churnRate": churn_rate_m,
+                        "cancellations": cancellations,
+                        "expired": expired_cnt,
+                    }
+                )
+        except Exception:
+            churn_rows = []
+
+        # Revenue contribution chart: placeholders (no subscription payments table yet)
+        revenue_contribution_rows = [
+            {
+                "month": x.get("month"),
+                "mrr": 0,
+                "arr": 0,
+                "renewalRevenue": 0,
+                "newRevenue": 0,
+            }
+            for x in growth_rows
+        ]
+
+        churn_rate = round((cancelled / total_hospitals * 100), 2) if total_hospitals else 0.0
+        retention_rate = round(100 - churn_rate, 2) if total_hospitals else 0.0
+
+        return {
+            "summary": {
+                "subscription": {
+                    "totalHospitals": total_hospitals,
+                    "activeSubscriptions": active,
+                    "expiredSubscriptions": expired,
+                    "cancelledSubscriptions": cancelled,
+                    "suspendedSubscriptions": suspended,
+                    "churnRate": churn_rate,
+                    "retentionRate": retention_rate,
+                    "newSubscriptions": sum(x["newSubscriptions"] for x in growth_rows) if growth_rows else 0,
+                    "renewals": 0,
+                    "upgrades": 0,
+                    "downgrades": 0,
+                }
+            },
+            "subscriptions": subscriptions,
+            "growth": growth_rows,
+            "plans": plans_rows,
+            "churn": churn_rows,
+            "revenueContribution": revenue_contribution_rows,
+        }
+
+    async def get_financial_analytics(
+        self,
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
+        hospital_id: Optional[uuid.UUID] = None,
+    ) -> Dict[str, Any]:
+        """
+        Financial analytics for dashboard.
+        Uses BillingPayment + Bill tables (existing).
+        """
+        from datetime import datetime as _dt, timezone as _tz
+        from app.models.billing import BillingPayment, Bill
+
+        if date_from and getattr(date_from, "tzinfo", None) is None:
+            date_from = date_from.replace(tzinfo=_tz.utc)
+        if date_to and getattr(date_to, "tzinfo", None) is None:
+            date_to = date_to.replace(tzinfo=_tz.utc)
+
+        # Transactions table: recent payments
+        tq = (
+            select(BillingPayment, Bill)
+            .join(Bill, Bill.id == BillingPayment.bill_id)
+            .where(
+                *[
+                    cond
+                    for cond in [
+                        (BillingPayment.hospital_id == hospital_id) if hospital_id else None,
+                        (BillingPayment.paid_at >= date_from) if date_from else None,
+                        (BillingPayment.paid_at <= date_to) if date_to else None,
+                    ]
+                    if cond is not None
+                ]
+            )
+            .order_by((BillingPayment.paid_at.is_(None)).asc(), BillingPayment.paid_at.desc().nullslast())
+            .limit(200)
+        )
+        tr = await self.db.execute(tq)
+        transactions = []
+        for p, bill in tr.all():
+            transactions.append(
+                {
+                    "hospitalName": None,  # payments are hospital-scoped; UI may not need this row-level
+                    "planType": None,
+                    "billingCycle": None,
+                    "invoiceId": bill.bill_number if bill else None,
+                    "invoiceDate": bill.created_at.date().isoformat() if bill and bill.created_at else None,
+                    "dueDate": None,
+                    "paymentDate": p.paid_at.date().isoformat() if p.paid_at else None,
+                    "amount": float(p.amount or 0),
+                    "tax": float(getattr(bill, "tax_amount", 0) or 0) if bill else 0,
+                    "totalAmount": float(getattr(bill, "total_amount", 0) or 0) if bill else float(p.amount or 0),
+                    "status": str(p.status).lower(),
+                    "paymentMethod": p.method,
+                    "transactionId": p.gateway_transaction_id or p.payment_ref,
+                }
+            )
+
+        # Summary metrics
+        rev_q = (
+            select(func.coalesce(func.sum(BillingPayment.amount), 0))
+            .where(
+                BillingPayment.status == "SUCCESS",
+                *[
+                    cond
+                    for cond in [
+                        (BillingPayment.hospital_id == hospital_id) if hospital_id else None,
+                        (BillingPayment.paid_at >= date_from) if date_from else None,
+                        (BillingPayment.paid_at <= date_to) if date_to else None,
+                    ]
+                    if cond is not None
+                ],
+            )
+        )
+        total_revenue = float((await self.db.execute(rev_q)).scalar() or 0)
+
+        # MRR/ARR (simple: revenue / months elapsed isn't meaningful; keep derived as placeholders)
+        mrr = round(total_revenue / 12, 2) if total_revenue else 0.0
+        arr = total_revenue
+
+        paid_count_q = select(func.count(BillingPayment.id)).where(BillingPayment.status == "SUCCESS")
+        paid_invoices = int((await self.db.execute(paid_count_q)).scalar() or 0)
+
+        pending_count_q = select(func.count(BillingPayment.id)).where(BillingPayment.status == "INITIATED")
+        pending_invoices = int((await self.db.execute(pending_count_q)).scalar() or 0)
+
+        summary = {
+            "financial": {
+                "totalRevenue": total_revenue,
+                "monthlyRecurringRevenue": mrr,
+                "annualRecurringRevenue": arr,
+                "averageRevenuePerUser": 0,
+                "collectionRate": 0,
+                "outstandingAmount": 0,
+                "overdueInvoices": 0,
+                "paidInvoices": paid_invoices,
+                "pendingInvoices": pending_invoices,
+                "profitMargin": 0,
+            }
+        }
+
+        # Revenue trends chart (month buckets)
+        revenue_trends = []
+        try:
+            rq = (
+                select(
+                    func.date_trunc("month", BillingPayment.paid_at).label("m"),
+                    func.coalesce(func.sum(BillingPayment.amount), 0).label("mrr"),
+                )
+                .where(
+                    BillingPayment.status == "SUCCESS",
+                    BillingPayment.paid_at.is_not(None),
+                    *[
+                        cond
+                        for cond in [
+                            (BillingPayment.hospital_id == hospital_id) if hospital_id else None,
+                            (BillingPayment.paid_at >= date_from) if date_from else None,
+                            (BillingPayment.paid_at <= date_to) if date_to else None,
+                        ]
+                        if cond is not None
+                    ],
+                )
+                .group_by(func.date_trunc("month", BillingPayment.paid_at))
+                .order_by(func.date_trunc("month", BillingPayment.paid_at))
+            )
+            rr = await self.db.execute(rq)
+            for m, mrr_val in rr.all():
+                mrr_val = float(mrr_val or 0)
+                revenue_trends.append(
+                    {
+                        "month": m.strftime("%b") if m else None,
+                        "mrr": mrr_val,
+                        "arr": mrr_val * 12,
+                        "newRevenue": 0,
+                        "churnRevenue": 0,
+                        "netRevenue": mrr_val,
+                    }
+                )
+        except Exception:
+            revenue_trends = []
+
+        # Collections chart (month buckets)
+        collections = [
+            {
+                "month": x["month"],
+                "collectedAmount": x["mrr"],
+                "pendingAmount": 0,
+                "overdueAmount": 0,
+                "collectionRate": 0,
+            }
+            for x in revenue_trends
+        ]
+
+        # Payment status breakdown
+        payment_status = []
+        try:
+            psq = (
+                select(BillingPayment.status, func.count(BillingPayment.id))
+                .group_by(BillingPayment.status)
+                .order_by(func.count(BillingPayment.id).desc())
+            )
+            psr = await self.db.execute(psq)
+            for st, cnt in psr.all():
+                payment_status.append({"status": str(st).title(), "count": int(cnt or 0)})
+        except Exception:
+            payment_status = []
+
+        return {
+            "summary": summary,
+            "transactions": transactions,
+            "revenueTrends": revenue_trends,
+            "collections": collections,
+            "plans": [],
+            "paymentStatus": payment_status,
+        }
+
+    async def get_performance_analytics(self) -> Dict[str, Any]:
+        """
+        Platform performance analytics.
+        NOTE: True API-level telemetry isn't stored yet; this returns DB-backed high-level counts.
+        """
+        from app.models.user import AuditLog
+
+        total_requests = 0
+        failed_requests = 0
+        try:
+            # Best-effort proxy: audit logs count (not real HTTP request logs)
+            total_requests = int((await self.db.execute(select(func.count(AuditLog.id)))).scalar() or 0)
+        except Exception:
+            total_requests = 0
+
+        summary = {
+            "performance": {
+                "platformUptime": None,
+                "apiResponseTime": None,
+                "peakResponseTime": None,
+                "errorRate": None,
+                "successRate": None,
+                "totalRequests": total_requests,
+                "failedRequests": failed_requests,
+                "activeSessions": None,
+                "serverLoad": None,
+                "cpuUsage": None,
+                "memoryUsage": None,
+            }
+        }
+        return {
+            "summary": summary,
+            "logs": [],
+            "responseTrends": [],
+            "errors": [],
+            "resources": [],
+        }
+
     async def delete_hospital(self, hospital_id: uuid.UUID, confirm: bool = False) -> Dict[str, Any]:
         """Soft delete hospital: set status INACTIVE, block users. Requires confirm=True."""
         hospital = await self._get_hospital_by_id(hospital_id)

@@ -18,6 +18,8 @@ from app.schemas.admin import (
     PlanAssignmentCreate, HospitalListOut, HospitalDetailsOut,
     SuperAdminUserUpdate, SuperAdminUserStatusUpdate
 )
+from app.schemas.response import SuccessResponse
+from app.core.utils import parse_date_string
 
 router = APIRouter(prefix="/super-admin")
 
@@ -529,102 +531,8 @@ async def get_hospital_subscription(
 # SUPPORT TICKET MANAGEMENT ENDPOINTS
 # ============================================================================
 
-class SupportTicketCreate(BaseModel):
-    hospital_name: str
-    subject: str
-    description: str
-    priority: str = "NORMAL"
-
-
-@router.post("/support/tickets", status_code=status.HTTP_201_CREATED, tags=["Super Admin - Support Management"])
-async def create_support_ticket(
-    body: SupportTicketCreate,
-    current_user: User = Depends(require_super_admin()),
-    service: SuperAdminService = Depends(get_super_admin_service),
-    db: AsyncSession = Depends(get_db_session),
-):
-    """Create support ticket (e.g. when hospital reports an issue). Uses hospital name to identify the hospital."""
-    from sqlalchemy import select, func
-    from app.models.tenant import Hospital
-    name = (body.hospital_name or "").strip()
-    if not name:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": "MISSING_HOSPITAL_NAME", "message": "hospital_name is required"})
-    r = await db.execute(
-        select(Hospital).where(func.lower(Hospital.name) == name.lower()).limit(1)
-    )
-    hospital = r.scalar_one_or_none()
-    if not hospital:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "HOSPITAL_NOT_FOUND", "message": f"No hospital found with name: {name}"},
-        )
-    h_uuid = hospital.id
-    result = await service.create_support_ticket(h_uuid, current_user.id, body.subject, body.description, body.priority)
-
-    # Auto-send ticket notification email to hospital email + hospital admins.
-    # This removes the need for a separate "ticket-email" call from the frontend.
-    try:
-        from sqlalchemy import select
-        from app.models.user import User as UserModel, Role
-        from app.core.enums import UserRole as _UserRole
-        from app.services.email_service import EmailService
-
-        ticket_id = result.get("ticket_id")
-        priority = (body.priority or "NORMAL").strip().upper()
-
-        recipients_set: set[str] = set()
-        if getattr(hospital, "email", None):
-            recipients_set.add(str(hospital.email).strip().lower())
-
-        # Add all hospital admin emails
-        admins_q = await db.execute(
-            select(UserModel.email).where(
-                UserModel.hospital_id == h_uuid,
-                UserModel.roles.any(Role.name == _UserRole.HOSPITAL_ADMIN.value),
-                UserModel.email.is_not(None),
-            )
-        )
-        for email in admins_q.scalars().all():
-            if email:
-                recipients_set.add(str(email).strip().lower())
-
-        if recipients_set:
-            email_subject = f"New Support Ticket Created - {ticket_id}"
-            html = f"""
-            <p>Hello,</p>
-            <p>A new support ticket has been created for your hospital.</p>
-            <p><b>Ticket ID:</b> {ticket_id}</p>
-            <p><b>Subject:</b> {body.subject}</p>
-            <p><b>Description:</b> {body.description}</p>
-            <p><b>Priority:</b> {priority}</p>
-            <p>Our support team will get back to you shortly.</p>
-            <p>Regards,<br/>Support Team</p>
-            """
-            text = (
-                "Hello,\n\n"
-                "A new support ticket has been created for your hospital.\n\n"
-                f"Ticket ID: {ticket_id}\n"
-                f"Subject: {body.subject}\n"
-                f"Description: {body.description}\n"
-                f"Priority: {priority}\n\n"
-                "Our support team will get back to you shortly.\n\n"
-                "Regards,\nSupport Team\n"
-            )
-
-            email_service = EmailService()
-            for recipient in recipients_set:
-                await email_service.send_email(recipient, email_subject, html, text)
-
-            result["email_sent"] = True
-        else:
-            result["email_sent"] = False
-
-    except Exception as e:
-        # Never fail ticket creation if email sending fails.
-        result["email_sent"] = False
-        result["email_error"] = str(e)
-
-    return result
+# NOTE: Super Admin can no longer create tickets directly.
+# Tickets must be created by Hospital Admin or Staff.
 
 
 @router.get("/support/tickets", tags=["Super Admin - Support Management"])
@@ -664,7 +572,44 @@ async def update_support_ticket_status(
     resolution_notes = status_data.get("resolution_notes")
     assigned_to = status_data.get("assigned_to_user_id")
     assigned_uuid = uuid.UUID(assigned_to) if assigned_to else None
-    result = await service.update_support_ticket_status(t_uuid, new_status, resolution_notes=resolution_notes, assigned_to_user_id=assigned_uuid)
+    result = await service.update_support_ticket_status(
+        t_uuid,
+        new_status,
+        resolution_notes=resolution_notes,
+        assigned_to_user_id=assigned_uuid,
+    )
+
+    # On resolve/close, email the person who raised the ticket.
+    if str(new_status).upper() in {"RESOLVED", "CLOSED"}:
+        try:
+            from sqlalchemy import select
+            from app.models.support import SupportTicket
+            from app.models.user import User as UserModel
+            from app.services.email_service import EmailService
+
+            ticket_r = await service.db.execute(select(SupportTicket).where(SupportTicket.id == t_uuid).limit(1))
+            ticket = ticket_r.scalar_one_or_none()
+            if ticket:
+                user_r = await service.db.execute(
+                    select(UserModel.email).where(UserModel.id == ticket.raised_by_user_id).limit(1)
+                )
+                email = user_r.scalar_one_or_none()
+                if email:
+                    subject = f"Support Ticket {ticket.id} marked {str(new_status).upper()}"
+                    notes = resolution_notes or ticket.resolution_notes or ""
+                    html = f"""
+                    <p>Hello,</p>
+                    <p>Your support ticket has been updated.</p>
+                    <p><b>Ticket ID:</b> {ticket.id}</p>
+                    <p><b>Status:</b> {str(new_status).upper()}</p>
+                    <p><b>Notes:</b> {notes}</p>
+                    <p>Regards,<br/>Support Team</p>
+                    """
+                    text = f"Ticket {ticket.id} status: {str(new_status).upper()}\nNotes: {notes}"
+                    await EmailService().send_email(str(email), subject, html, text)
+        except Exception:
+            pass
+
     return result
 
 
@@ -680,6 +625,79 @@ async def get_platform_analytics(
     """Dashboard: hospitals, active subscriptions, total revenue, patient trends, occupancy rates."""
     result = await service.get_platform_analytics()
     return result
+
+
+# ============================================================================
+# SUBSCRIPTION / FINANCIAL / PERFORMANCE ANALYTICS
+# ============================================================================
+
+@router.get("/subscription-analytics", tags=["Super Admin - Analytics & Monitoring"])
+async def get_subscription_analytics(
+    current_user: User = Depends(require_super_admin()),
+    service: SuperAdminService = Depends(get_super_admin_service),
+):
+    """Subscription analytics for dashboard (summary + table + charts)."""
+    data = await service.get_subscription_analytics()
+    return SuccessResponse(success=True, message="Subscription analytics", data=data).dict()
+
+class AnalyticsFilter(BaseModel):
+    date_from: Optional[str] = None  # YYYY-MM-DD or ISO
+    date_to: Optional[str] = None
+    plan_name: Optional[str] = None  # FREE/STANDARD/PREMIUM
+    status: Optional[str] = None  # ACTIVE/EXPIRED/CANCELLED/SUSPENDED
+
+@router.post("/subscription-analytics", tags=["Super Admin - Analytics & Monitoring"])
+async def get_subscription_analytics_filtered(
+    body: AnalyticsFilter,
+    current_user: User = Depends(require_super_admin()),
+    service: SuperAdminService = Depends(get_super_admin_service),
+):
+    df = parse_date_string(body.date_from) if body.date_from else None
+    dt = parse_date_string(body.date_to) if body.date_to else None
+    data = await service.get_subscription_analytics(
+        date_from=df,
+        date_to=dt,
+        plan_name=body.plan_name,
+        status=body.status,
+    )
+    return SuccessResponse(success=True, message="Subscription analytics", data=data).dict()
+
+@router.get("/financial-analytics", tags=["Super Admin - Analytics & Monitoring"])
+async def get_financial_analytics(
+    current_user: User = Depends(require_super_admin()),
+    service: SuperAdminService = Depends(get_super_admin_service),
+):
+    """Financial analytics for dashboard (summary + transactions + charts)."""
+    data = await service.get_financial_analytics()
+    return SuccessResponse(success=True, message="Financial analytics", data=data).dict()
+
+class FinancialAnalyticsFilter(BaseModel):
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    hospital_id: Optional[str] = None  # UUID
+
+@router.post("/financial-analytics", tags=["Super Admin - Analytics & Monitoring"])
+async def get_financial_analytics_filtered(
+    body: FinancialAnalyticsFilter,
+    current_user: User = Depends(require_super_admin()),
+    service: SuperAdminService = Depends(get_super_admin_service),
+):
+    import uuid as _uuid
+    df = parse_date_string(body.date_from) if body.date_from else None
+    dt = parse_date_string(body.date_to) if body.date_to else None
+    hid = _uuid.UUID(body.hospital_id) if body.hospital_id else None
+    data = await service.get_financial_analytics(date_from=df, date_to=dt, hospital_id=hid)
+    return SuccessResponse(success=True, message="Financial analytics", data=data).dict()
+
+
+@router.get("/performance-analytics", tags=["Super Admin - Analytics & Monitoring"])
+async def get_performance_analytics(
+    current_user: User = Depends(require_super_admin()),
+    service: SuperAdminService = Depends(get_super_admin_service),
+):
+    """Platform performance analytics (best-effort; no full telemetry stored yet)."""
+    data = await service.get_performance_analytics()
+    return SuccessResponse(success=True, message="Performance analytics", data=data).dict()
 
 
 @router.get("/audit-logs", tags=["Super Admin - Analytics & Monitoring"])
