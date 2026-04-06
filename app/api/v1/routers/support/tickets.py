@@ -63,7 +63,7 @@ async def create_ticket_as_staff(
     body: SupportTicketCreateIn,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user),
-    ctx: Dict[str, Any] = Depends(require_hospital_context()),
+    ctx: Dict[str, Any] = Depends(require_hospital_context),
 ):
     # Allow any hospital-scoped staff (including doctors/nurses/receptionists) to raise a ticket.
     hospital_id: uuid.UUID = ctx["hospital_id"]

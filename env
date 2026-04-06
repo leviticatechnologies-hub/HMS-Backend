@@ -1,0 +1,50 @@
+# ============================================================
+# Hospital Management SaaS - Environment Configuration
+# NEVER commit real credentials to version control.
+# ============================================================
+
+# Application
+DEBUG=True
+LOG_LEVEL=DEBUG
+
+# Database — CHANGE ALL VALUES before deployment
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=123
+DB_PASSWORD=123
+DB_NAME=123
+DATABASE_URL=postgresql+asyncpg://123:123@localhost:5432/123
+DATABASE_URL_SYNC=postgresql://123:123@localhost:5432/123
+# Security — generate with: python -c "import secrets; print(secrets.token_hex(32))"
+SECRET_KEY=9932eabac13b053287420e526d77eb3ae47d2b0e8f59c4a1684845c4997f0879
+
+# Super Admin — change immediately after first login
+SUPERADMIN_EMAIL=superadmin@hsm.com
+SUPERADMIN_PASSWORD=SuperAdmin123!
+SUPERADMIN_FIRST_NAME=Super
+SUPERADMIN_LAST_NAME=Admin
+
+# Email (SMTP)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=cheekatiabhinaya@gmail.com
+SMTP_PASS=wpjeppaqlcnyxbod
+EMAIL_FROM=cheekatiabhinaya@gmail.com
+
+# Payment Gateways
+RAZORPAY_KEY_ID=rzp_test_jUuqoNowtoLjk6
+RAZORPAY_KEY_SECRET=n3HOE6demZT8nQfV0Sb5H1Ox
+RAZORPAY_WEBHOOK_SECRET=iamironman
+
+STRIPE_SECRET_KEY=
+STRIPE_WEBHOOK_SECRET=
+STRIPE_PUBLISHABLE_KEY=
+
+PAYTM_MID=
+PAYTM_KEY=
+PAYTM_ENV=sandbox
+PAYTM_WEBSITE=WEBSTAGING
+PAYTM_CALLBACK_URL=
+
+# Redis — for DB-backed idempotency (required in production)
+REDIS_URL=redis://localhost:6379/0
