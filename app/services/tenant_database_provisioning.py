@@ -132,6 +132,9 @@ def ensure_tenant_schema(db_name: str) -> None:
         Base.metadata.create_all(bind=eng)
     finally:
         eng.dispose()
+    from app.database.schema_patches import ensure_hospitals_tenant_database_name_column
+
+    ensure_hospitals_tenant_database_name_column(url)
 
 
 def copy_hospital_registry_row_to_tenant(db_name: str, hospital: Any) -> None:

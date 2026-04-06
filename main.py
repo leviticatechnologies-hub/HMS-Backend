@@ -513,6 +513,13 @@ async def setup_database_once() -> bool:
                 await create_pharmacy_tables_if_needed()
                 logger.info(" PHARMACY TABLES FINISHED")
 
+            # create_all + older images skip new columns; alembic subprocess may use wrong DSN without DATABASE_URL_SYNC
+            from app.database.schema_patches import ensure_hospitals_tenant_database_name_column
+
+            await asyncio.to_thread(
+                ensure_hospitals_tenant_database_name_column, settings.DATABASE_URL_SYNC
+            )
+
             # Step 2.5: Optionally prune legacy tables (dev/local only)
             if settings.DB_PRUNE_UNUSED_TABLES:
                 logger.info(" PRUNE UNUSED TABLES START")
@@ -551,9 +558,15 @@ def run_migrations_isolated():
         logger.info("Starting completely isolated Alembic migrations...")
         
         # Run alembic as subprocess - complete isolation from application
+        env = {
+            **os.environ,
+            "DATABASE_URL": settings.DATABASE_URL,
+            "DATABASE_URL_SYNC": settings.DATABASE_URL_SYNC,
+        }
         result = subprocess.run(
             ["alembic", "upgrade", "head"],
             cwd=os.getcwd(),
+            env=env,
             capture_output=True,
             text=True,
             timeout=120

@@ -73,8 +73,22 @@ from app.models.support import SupportTicket
 # This is the Alembic Config object
 config = context.config
 
-# Get database URL directly from environment - NO settings import
-database_url_sync = os.getenv("DATABASE_URL_SYNC")
+# Get database URL directly from environment - NO settings import.
+# Deployments often set only DATABASE_URL (async); derive sync URL the same way as app config.
+def _env_async_to_sync(url: str) -> str:
+    v = (url or "").strip()
+    if v.startswith("postgres://"):
+        return v.replace("postgres://", "postgresql://", 1)
+    if v.startswith("postgresql+asyncpg://"):
+        return v.replace("postgresql+asyncpg://", "postgresql://", 1)
+    return v
+
+
+database_url_sync = (os.getenv("DATABASE_URL_SYNC") or "").strip()
+if not database_url_sync:
+    async_url = (os.getenv("DATABASE_URL") or "").strip()
+    if async_url:
+        database_url_sync = _env_async_to_sync(async_url)
 if database_url_sync:
     config.set_main_option("sqlalchemy.url", database_url_sync)
 
