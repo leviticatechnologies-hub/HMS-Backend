@@ -53,6 +53,33 @@ class Settings(BaseSettings):
     DB_PRUNE_UNUSED_TABLES: bool = Field(default=False, env="DB_PRUNE_UNUSED_TABLES")
     DB_BOOTSTRAP_FROM_MODELS: bool = Field(default=True, env="DB_BOOTSTRAP_FROM_MODELS")
 
+    # Per-hospital PostgreSQL databases (same server as DATABASE_URL / pgAdmin)
+    TENANT_DB_AUTO_PROVISION: bool = Field(
+        default=True,
+        env="TENANT_DB_AUTO_PROVISION",
+        description="When True, Super Admin create_hospital runs CREATE DATABASE on the same Postgres instance",
+    )
+    TENANT_DB_NAME_PREFIX: str = Field(
+        default="hosp_",
+        env="TENANT_DB_NAME_PREFIX",
+        description="Prefix for tenant DB names (e.g. hosp_<uuid_hex>)",
+    )
+    TENANT_TEMPLATE_DATABASE: str = Field(
+        default="",
+        env="TENANT_TEMPLATE_DATABASE",
+        description="Optional: clone new tenant DBs from this template (prepare once with schema)",
+    )
+    TENANT_DB_ADMIN_DATABASE: str = Field(
+        default="postgres",
+        env="TENANT_DB_ADMIN_DATABASE",
+        description="Maintenance DB used for CREATE DATABASE (usually postgres)",
+    )
+    TENANT_DB_ROUTE_QUERIES: bool = Field(
+        default=True,
+        env="TENANT_DB_ROUTE_QUERIES",
+        description="If True, hospital-scoped API requests use that hospital's dedicated database when tenant_database_name is set",
+    )
+
     # Redis / Caching
     REDIS_URL: str = Field(default="redis://localhost:6379/0", env="REDIS_URL")
     

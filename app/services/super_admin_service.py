@@ -144,6 +144,7 @@ class SuperAdminService:
                 "id": str(hospital.id),
                 "name": hospital.name,
                 "email": hospital.email,
+                "tenant_database_name": hospital.tenant_database_name,
                 "phone": hospital.phone,
                 "contact": hospital.phone,
                 "address": hospital.address,
@@ -219,6 +220,7 @@ class SuperAdminService:
             "name": hospital.name,
             "registration_number": hospital.registration_number,
             "email": hospital.email,
+            "tenant_database_name": hospital.tenant_database_name,
             "phone": hospital.phone,
             "contact": hospital.phone,
             "address": hospital.address,
@@ -435,262 +437,6 @@ class SuperAdminService:
             "message": f"Administrator status updated to {new_status}"
         }
 
-    # ============================================================================
-    # SUPER ADMIN - USER ACCOUNTS
-    # ============================================================================
-
-    async def get_super_admin_users(
-        self,
-        page: int = 1,
-        limit: int = 50,
-    ) -> Dict[str, Any]:
-        """Get all hospital admin users with their hospital details."""
-        from app.models.tenant import Hospital
-
-        offset = (page - 1) * limit
-
-        # Only hospital admins (HOSPITAL_ADMIN). This matches the request shape
-        # which includes admin_name and hospital registration details.
-        query = (
-            select(User, Hospital)
-            .options(selectinload(User.roles))
-            .join(Hospital, Hospital.id == User.hospital_id)
-            .where(
-                and_(
-                    User.hospital_id.isnot(None),
-                    User.roles.any(Role.name == UserRole.HOSPITAL_ADMIN),
-                )
-            )
-            .order_by(User.created_at.desc())
-            .offset(offset)
-            .limit(limit)
-        )
-
-        count_query = (
-            select(func.count(User.id))
-            .where(
-                and_(
-                    User.hospital_id.isnot(None),
-                    User.roles.any(Role.name == UserRole.HOSPITAL_ADMIN),
-                )
-            )
-        )
-
-        count_result = await self.db.execute(count_query)
-        total = count_result.scalar() or 0
-
-        result = await self.db.execute(query)
-        rows = result.all()
-
-        users_list: List[Dict[str, Any]] = []
-        for user, hospital in rows:
-            admin_name = f"{user.first_name} {user.last_name}".strip()
-            users_list.append(
-                {
-                    "id": str(user.id),
-                    "hospital_name": hospital.name,
-                    "email": user.email,
-                    "phone_number": user.phone,
-                    "address": hospital.address,
-                    "city": hospital.city,
-                    "state": hospital.state,
-                    "country": hospital.country,
-                    "pincode": hospital.pincode,
-                    "admin_name": admin_name,
-                    "status": user.status,
-                    "registration_no": hospital.registration_number,
-                    "hospital_logo": hospital.logo_url,
-                }
-            )
-
-        return {
-            "users": users_list,
-            "pagination": {
-                "page": page,
-                "limit": limit,
-                "total": total,
-                "pages": (total + limit - 1) // limit if limit else 1,
-            },
-            "message": "Users retrieved successfully",
-        }
-
-    async def update_super_admin_user(
-        self,
-        user_id: uuid.UUID,
-        payload: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """Update an existing hospital admin user + its hospital details."""
-        from app.models.tenant import Hospital
-
-        query = select(User).options(selectinload(User.roles)).where(User.id == user_id)
-        result = await self.db.execute(query)
-        user: Optional[User] = result.scalar_one_or_none()
-
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={"code": "USER_NOT_FOUND", "message": "User not found"},
-            )
-
-        user_roles = [role.name for role in user.roles]
-        if UserRole.HOSPITAL_ADMIN not in user_roles:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"code": "NOT_HOSPITAL_ADMIN", "message": "User is not a hospital administrator"},
-            )
-
-        if not user.hospital_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"code": "NO_HOSPITAL", "message": "User has no hospital assigned"},
-            )
-
-        hosp_result = await self.db.execute(select(Hospital).where(Hospital.id == user.hospital_id))
-        hospital: Optional[Hospital] = hosp_result.scalar_one_or_none()
-        if not hospital:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={"code": "HOSPITAL_NOT_FOUND", "message": "Hospital not found"},
-            )
-
-        normalized_status = payload.get("status")
-        if normalized_status not in [UserStatus.ACTIVE, UserStatus.BLOCKED, UserStatus.PENDING]:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"code": "INVALID_STATUS", "message": "Invalid status value"},
-            )
-
-        # Uniqueness checks
-        email = str(payload["email"]).strip().lower()
-        if email != user.email:
-            existing_user = await self.db.execute(
-                select(User).where(
-                    and_(func.lower(User.email) == email, User.id != user_id)
-                )
-            )
-            if existing_user.scalar_one_or_none():
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={"code": "EMAIL_EXISTS", "message": "Email already exists"},
-                )
-
-        registration_no = str(payload["registration_no"]).strip()
-        if registration_no != hospital.registration_number:
-            existing_hospital = await self.db.execute(
-                select(Hospital).where(
-                    and_(
-                        Hospital.registration_number == registration_no,
-                        Hospital.id != hospital.id,
-                    )
-                )
-            )
-            if existing_hospital.scalar_one_or_none():
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={"code": "REGISTRATION_NO_EXISTS", "message": "Hospital registration number already exists"},
-                )
-
-        # Update hospital
-        hospital.name = payload["hospital_name"]
-        hospital.email = email
-        hospital.phone = payload["phone_number"]
-        hospital.address = payload["address"]
-        hospital.city = payload["city"]
-        hospital.state = payload["state"]
-        hospital.country = payload["country"]
-        hospital.pincode = payload["pincode"]
-        hospital.registration_number = registration_no
-        if payload.get("hospital_logo") is not None:
-            hospital.logo_url = payload["hospital_logo"]
-
-        # Update user (admin)
-        admin_name = payload["admin_name"].strip()
-        parts = admin_name.split()
-        first_name = parts[0] if parts else ""
-        last_name = " ".join(parts[1:]) if len(parts) > 1 else (parts[0] if parts else "")
-
-        user.email = email
-        user.phone = payload["phone_number"]
-        user.first_name = first_name
-        user.last_name = last_name
-        user.status = normalized_status
-        user.updated_at = datetime.utcnow()
-
-        await self.db.commit()
-
-        return {
-            "user_id": str(user.id),
-            "message": "User updated successfully",
-        }
-
-    async def set_super_admin_user_status(self, user_id: uuid.UUID, new_status: str) -> Dict[str, Any]:
-        """Toggle ACTIVE / INACTIVE for hospital admin user."""
-        query = select(User).options(selectinload(User.roles)).where(User.id == user_id)
-        result = await self.db.execute(query)
-        user: Optional[User] = result.scalar_one_or_none()
-
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={"code": "USER_NOT_FOUND", "message": "User not found"},
-            )
-
-        user_roles = [role.name for role in user.roles]
-        if UserRole.HOSPITAL_ADMIN not in user_roles:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"code": "NOT_HOSPITAL_ADMIN", "message": "User is not a hospital administrator"},
-            )
-
-        if new_status not in [UserStatus.ACTIVE, UserStatus.BLOCKED, UserStatus.PENDING]:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"code": "INVALID_STATUS", "message": "Invalid status value"},
-            )
-
-        old_status = user.status
-        user.status = new_status
-        user.updated_at = datetime.utcnow()
-        await self.db.commit()
-
-        return {
-            "user_id": str(user.id),
-            "old_status": old_status,
-            "new_status": new_status,
-            "message": "User status updated successfully",
-        }
-
-    async def delete_super_admin_user(self, user_id: uuid.UUID) -> Dict[str, Any]:
-        """
-        Soft delete for safety: set user status to BLOCKED.
-        (Hard delete may break FK constraints from other tables.)
-        """
-        query = select(User).options(selectinload(User.roles)).where(User.id == user_id)
-        result = await self.db.execute(query)
-        user: Optional[User] = result.scalar_one_or_none()
-
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={"code": "USER_NOT_FOUND", "message": "User not found"},
-            )
-
-        user_roles = [role.name for role in user.roles]
-        if UserRole.HOSPITAL_ADMIN not in user_roles:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"code": "NOT_HOSPITAL_ADMIN", "message": "User is not a hospital administrator"},
-            )
-
-        user.status = UserStatus.BLOCKED
-        user.updated_at = datetime.utcnow()
-        await self.db.commit()
-
-        return {
-            "user_id": str(user.id),
-            "message": "User deleted successfully",
-        }
-    
     # ============================================================================
     # SUBSCRIPTION PLAN MANAGEMENT
     # ============================================================================
@@ -1692,8 +1438,56 @@ class SuperAdminService:
     async def list_support_tickets(
         self, hospital_id: Optional[uuid.UUID] = None, status: Optional[str] = None, skip: int = 0, limit: int = 50
     ) -> Dict[str, Any]:
-        """List support tickets with optional filters."""
+        """List support tickets: merged from each hospital's dedicated database when provisioned."""
         from app.models.support import SupportTicket
+        from app.database.session import get_tenant_session_factory
+
+        hq = select(Hospital.id, Hospital.tenant_database_name).where(Hospital.tenant_database_name.isnot(None))
+        if hospital_id:
+            hq = hq.where(Hospital.id == hospital_id)
+        hrows = (await self.db.execute(hq)).all()
+
+        if not hrows:
+            return await self._list_support_tickets_platform_legacy(
+                hospital_id=hospital_id, status=status, skip=skip, limit=limit
+            )
+
+        combined: List[Dict[str, Any]] = []
+        for hid, tdb in hrows:
+            fac = get_tenant_session_factory(tdb)
+            async with fac() as s:
+                cond = [SupportTicket.hospital_id == hid]
+                if status:
+                    cond.append(SupportTicket.status == status)
+                q = select(SupportTicket).where(and_(*cond)).order_by(desc(SupportTicket.created_at))
+                res = await s.execute(q)
+                for t in res.scalars().all():
+                    combined.append(
+                        {
+                            "id": str(t.id),
+                            "hospital_id": str(t.hospital_id),
+                            "subject": t.subject,
+                            "status": t.status,
+                            "priority": t.priority,
+                            "created_at": t.created_at.isoformat() if t.created_at else None,
+                        }
+                    )
+
+        combined.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+        total = len(combined)
+        page = combined[skip : skip + limit]
+        return {"tickets": page, "total": total, "skip": skip, "limit": limit}
+
+    async def _list_support_tickets_platform_legacy(
+        self,
+        hospital_id: Optional[uuid.UUID],
+        status: Optional[str],
+        skip: int,
+        limit: int,
+    ) -> Dict[str, Any]:
+        """Pre–per-tenant DB: tickets lived on the platform database."""
+        from app.models.support import SupportTicket
+
         conditions = []
         if hospital_id:
             conditions.append(SupportTicket.hospital_id == hospital_id)
@@ -1708,18 +1502,77 @@ class SuperAdminService:
             q = q.where(and_(*conditions))
         r = await self.db.execute(q)
         tickets = r.scalars().all()
-        return {"tickets": [{"id": str(t.id), "hospital_id": str(t.hospital_id), "subject": t.subject, "status": t.status, "priority": t.priority, "created_at": t.created_at.isoformat()} for t in tickets], "total": total, "skip": skip, "limit": limit}
+        return {
+            "tickets": [
+                {
+                    "id": str(t.id),
+                    "hospital_id": str(t.hospital_id),
+                    "subject": t.subject,
+                    "status": t.status,
+                    "priority": t.priority,
+                    "created_at": t.created_at.isoformat() if t.created_at else None,
+                }
+                for t in tickets
+            ],
+            "total": total,
+            "skip": skip,
+            "limit": limit,
+        }
 
-    async def update_support_ticket_status(self, ticket_id: uuid.UUID, new_status: str, resolution_notes: Optional[str] = None, assigned_to_user_id: Optional[uuid.UUID] = None) -> Dict[str, Any]:
-        """Update support ticket status (Super Admin only)."""
+    async def update_support_ticket_status(
+        self,
+        ticket_id: uuid.UUID,
+        new_status: str,
+        resolution_notes: Optional[str] = None,
+        assigned_to_user_id: Optional[uuid.UUID] = None,
+    ) -> Dict[str, Any]:
+        """Update ticket in the hospital's tenant DB, or platform (legacy)."""
         from app.models.support import SupportTicket
+        from app.database.session import get_tenant_session_factory
+
+        valid = ["OPEN", "IN_PROGRESS", "ESCALATED", "RESOLVED", "CLOSED"]
+        if new_status not in valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "INVALID_STATUS", "message": f"Valid: {valid}"},
+            )
+
+        hrows = (
+            await self.db.execute(
+                select(Hospital.id, Hospital.tenant_database_name).where(Hospital.tenant_database_name.isnot(None))
+            )
+        ).all()
+
+        for _hid, tdb in hrows:
+            fac = get_tenant_session_factory(tdb)
+            async with fac() as s:
+                r = await s.execute(select(SupportTicket).where(SupportTicket.id == ticket_id))
+                ticket = r.scalar_one_or_none()
+                if not ticket:
+                    continue
+                ticket.status = new_status
+                if resolution_notes is not None:
+                    ticket.resolution_notes = resolution_notes
+                if assigned_to_user_id is not None:
+                    ticket.assigned_to_user_id = assigned_to_user_id
+                if new_status in ("RESOLVED", "CLOSED"):
+                    ticket.resolved_at = datetime.utcnow()
+                ticket.updated_at = datetime.utcnow()
+                await s.commit()
+                return {
+                    "ticket_id": str(ticket_id),
+                    "status": new_status,
+                    "message": "Ticket updated",
+                    "raised_by_user_id": str(ticket.raised_by_user_id),
+                }
+
         r = await self.db.execute(select(SupportTicket).where(SupportTicket.id == ticket_id))
         ticket = r.scalar_one_or_none()
         if not ticket:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": "TICKET_NOT_FOUND", "message": "Support ticket not found"})
-        valid = ["OPEN", "IN_PROGRESS", "ESCALATED", "RESOLVED", "CLOSED"]
-        if new_status not in valid:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": "INVALID_STATUS", "message": f"Valid: {valid}"})
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "TICKET_NOT_FOUND", "message": "Support ticket not found"},
+            )
         ticket.status = new_status
         if resolution_notes is not None:
             ticket.resolution_notes = resolution_notes
@@ -1729,7 +1582,12 @@ class SuperAdminService:
             ticket.resolved_at = datetime.utcnow()
         ticket.updated_at = datetime.utcnow()
         await self.db.commit()
-        return {"ticket_id": str(ticket_id), "status": new_status, "message": "Ticket updated"}
+        return {
+            "ticket_id": str(ticket_id),
+            "status": new_status,
+            "message": "Ticket updated",
+            "raised_by_user_id": str(ticket.raised_by_user_id),
+        }
 
     async def notify_hospital_admins(self, hospital_id: Optional[uuid.UUID], subject: str, message: str, created_by_user_id: Optional[uuid.UUID] = None) -> Dict[str, Any]:
         """Send notification to hospital admins. If hospital_id is None, send to all hospital admins."""

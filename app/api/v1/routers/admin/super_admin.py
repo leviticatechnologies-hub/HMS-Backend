@@ -16,7 +16,6 @@ from app.schemas.admin import (
     HospitalUpdate, AdminStatusUpdate, HospitalStatusUpdate,
     HospitalAdminCreate, SubscriptionPlanCreate, SubscriptionPlanUpdate,
     PlanAssignmentCreate, HospitalListOut, HospitalDetailsOut,
-    SuperAdminUserUpdate, SuperAdminUserStatusUpdate
 )
 from app.schemas.response import SuccessResponse
 from app.core.utils import parse_date_string
@@ -348,80 +347,6 @@ async def reset_admin_password(
 
 
 # ============================================================================
-# SUPER ADMIN - USER ACCOUNTS (NO POST CREATE)
-# ============================================================================
-
-@router.get("/users", tags=["Super Admin - User Accounts"])
-async def get_all_users(
-    page: int = Query(1, ge=1, description="Page number"),
-    limit: int = Query(50, ge=1, le=100, description="Items per page"),
-    current_user: User = Depends(require_super_admin()),
-    service: SuperAdminService = Depends(get_super_admin_service),
-):
-    """
-    Get all hospital administrator users with their hospital details.
-    """
-    return await service.get_super_admin_users(page=page, limit=limit)
-
-
-@router.put("/users/{user_id}", tags=["Super Admin - User Accounts"])
-@router.patch("/users/{user_id}", tags=["Super Admin - User Accounts"])
-async def update_user(
-    user_id: str,
-    payload: SuperAdminUserUpdate,
-    current_user: User = Depends(require_super_admin()),
-    service: SuperAdminService = Depends(get_super_admin_service),
-):
-    """
-    Update an existing hospital admin user + its hospital details.
-    Note: admin_password is intentionally not supported here (POST create removed).
-    """
-    try:
-        uid = uuid.UUID(user_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"code": "INVALID_USER_ID", "message": "Invalid user ID format"},
-        )
-    return await service.update_super_admin_user(uid, payload.model_dump())
-
-
-@router.patch("/users/{user_id}/status", tags=["Super Admin - User Accounts"])
-async def toggle_user_status(
-    user_id: str,
-    payload: SuperAdminUserStatusUpdate,
-    current_user: User = Depends(require_super_admin()),
-    service: SuperAdminService = Depends(get_super_admin_service),
-):
-    """Toggle hospital admin ACTIVE / INACTIVE (INACTIVE maps to BLOCKED)."""
-    try:
-        uid = uuid.UUID(user_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"code": "INVALID_USER_ID", "message": "Invalid user ID format"},
-        )
-    return await service.set_super_admin_user_status(uid, payload.status)
-
-
-@router.delete("/users/{user_id}", tags=["Super Admin - User Accounts"])
-async def delete_user(
-    user_id: str,
-    current_user: User = Depends(require_super_admin()),
-    service: SuperAdminService = Depends(get_super_admin_service),
-):
-    """Soft delete hospital admin user (sets status to BLOCKED)."""
-    try:
-        uid = uuid.UUID(user_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"code": "INVALID_USER_ID", "message": "Invalid user ID format"},
-        )
-    return await service.delete_super_admin_user(uid)
-
-
-# ============================================================================
 # SUBSCRIPTION PLAN MANAGEMENT ENDPOINTS
 # ============================================================================
 
@@ -613,34 +538,34 @@ async def update_support_ticket_status(
         assigned_to_user_id=assigned_uuid,
     )
 
-    # On resolve/close, email the person who raised the ticket.
+    # On resolve/close, email the person who raised the ticket (users always on platform DB).
     if str(new_status).upper() in {"RESOLVED", "CLOSED"}:
         try:
             from sqlalchemy import select
-            from app.models.support import SupportTicket
             from app.models.user import User as UserModel
             from app.services.email_service import EmailService
+            from app.database.session import AsyncSessionLocal
 
-            ticket_r = await service.db.execute(select(SupportTicket).where(SupportTicket.id == t_uuid).limit(1))
-            ticket = ticket_r.scalar_one_or_none()
-            if ticket:
-                user_r = await service.db.execute(
-                    select(UserModel.email).where(UserModel.id == ticket.raised_by_user_id).limit(1)
-                )
-                email = user_r.scalar_one_or_none()
-                if email:
-                    subject = f"Support Ticket {ticket.id} marked {str(new_status).upper()}"
-                    notes = resolution_notes or ticket.resolution_notes or ""
-                    html = f"""
-                    <p>Hello,</p>
-                    <p>Your support ticket has been updated.</p>
-                    <p><b>Ticket ID:</b> {ticket.id}</p>
-                    <p><b>Status:</b> {str(new_status).upper()}</p>
-                    <p><b>Notes:</b> {notes}</p>
-                    <p>Regards,<br/>Support Team</p>
-                    """
-                    text = f"Ticket {ticket.id} status: {str(new_status).upper()}\nNotes: {notes}"
-                    await EmailService().send_email(str(email), subject, html, text)
+            raised_by = result.get("raised_by_user_id")
+            if raised_by:
+                async with AsyncSessionLocal() as pdb:
+                    user_r = await pdb.execute(
+                        select(UserModel.email).where(UserModel.id == uuid.UUID(str(raised_by))).limit(1)
+                    )
+                    email = user_r.scalar_one_or_none()
+                    if email:
+                        notes = resolution_notes or ""
+                        subject = f"Support Ticket {t_uuid} marked {str(new_status).upper()}"
+                        html = f"""
+                        <p>Hello,</p>
+                        <p>Your support ticket has been updated.</p>
+                        <p><b>Ticket ID:</b> {t_uuid}</p>
+                        <p><b>Status:</b> {str(new_status).upper()}</p>
+                        <p><b>Notes:</b> {notes}</p>
+                        <p>Regards,<br/>Support Team</p>
+                        """
+                        text = f"Ticket {t_uuid} status: {str(new_status).upper()}\nNotes: {notes}"
+                        await EmailService().send_email(str(email), subject, html, text)
         except Exception:
             pass
 

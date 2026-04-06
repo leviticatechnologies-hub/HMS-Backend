@@ -10,6 +10,7 @@ UPDATED RULES:
 - Hospital Admin/Staff must use hospital-approved email domains
 - Patients can use any email domain
 """
+import asyncio
 import re
 import secrets
 import uuid
@@ -26,6 +27,7 @@ from app.models.patient import PatientProfile
 from app.models.password_history import PasswordHistory
 from app.core.security import SecurityManager
 from app.core.config import settings
+from app.database.session import invalidate_hospital_tenant_cache
 from app.services.email_service import EmailService
 from app.services.otp_service import otp_service
 from app.core.enums import UserRole, UserStatus
@@ -162,11 +164,39 @@ class AuthService:
                 existing_settings["approved_email_domains"] = approved
                 existing_hospital.settings = existing_settings
 
+                if settings.TENANT_DB_AUTO_PROVISION and not existing_hospital.tenant_database_name:
+                    from app.services.tenant_database_provisioning import (
+                        bootstrap_tenant_database,
+                        tenant_db_name_for_hospital,
+                        provision_postgres_database,
+                    )
+
+                    used_template = bool((settings.TENANT_TEMPLATE_DATABASE or "").strip())
+                    tdb = tenant_db_name_for_hospital(existing_hospital.id)
+                    try:
+                        await asyncio.to_thread(provision_postgres_database, tdb, None)
+                    except Exception as e:
+                        logger.exception("Tenant DB provision failed on reactivation")
+                        raise HTTPException(
+                            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail={
+                                "code": "TENANT_DB_PROVISION_FAILED",
+                                "message": "Hospital reactivated but dedicated database could not be created. Check Postgres CREATEDB permission and TENANT_TEMPLATE_DATABASE.",
+                            },
+                        ) from e
+                    existing_hospital.tenant_database_name = tdb
+                    await self.db.flush()
+                    await asyncio.to_thread(
+                        bootstrap_tenant_database, tdb, existing_hospital, used_template
+                    )
+
                 await self.db.commit()
+                invalidate_hospital_tenant_cache(existing_hospital.id)
                 return {
                     "hospital_id": str(existing_hospital.id),
                     "name": existing_hospital.name,
                     "registration_number": existing_hospital.registration_number,
+                    "tenant_database_name": existing_hospital.tenant_database_name,
                     "message": "Hospital reactivated successfully",
                 }
 
@@ -175,9 +205,31 @@ class AuthService:
                 detail={"code": "HOSPITAL_EXISTS", "message": "Hospital with this registration number already exists"},
             )
         
-        # Create hospital
+        # Create hospital (dedicated Postgres DB on same server when enabled)
+        hospital_id = uuid.uuid4()
+        tenant_db: Optional[str] = None
+        used_template = bool((settings.TENANT_TEMPLATE_DATABASE or "").strip())
+        if settings.TENANT_DB_AUTO_PROVISION:
+            from app.services.tenant_database_provisioning import (
+                tenant_db_name_for_hospital,
+                provision_postgres_database,
+            )
+
+            tenant_db = tenant_db_name_for_hospital(hospital_id)
+            try:
+                await asyncio.to_thread(provision_postgres_database, tenant_db, None)
+            except Exception as e:
+                logger.exception("Tenant DB provision failed on create_hospital")
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={
+                        "code": "TENANT_DB_PROVISION_FAILED",
+                        "message": "Could not create dedicated database for this hospital. Ensure the DB role has CREATEDB, DATABASE_URL_SYNC points at your instance, and TENANT_TEMPLATE_DATABASE (if set) exists.",
+                    },
+                ) from e
+
         hospital = Hospital(
-            id=uuid.uuid4(),
+            id=hospital_id,
             name=hospital_data['name'],
             registration_number=hospital_data['registration_number'],
             email=hospital_data['email'],
@@ -187,6 +239,7 @@ class AuthService:
             state=hospital_data['state'],
             country=hospital_data['country'],
             pincode=hospital_data['pincode'],
+            tenant_database_name=tenant_db,
             settings={
                 "approved_email_domains": [hospital_data['email'].split('@')[1]]  # Auto-approve hospital's domain
             }
@@ -195,7 +248,13 @@ class AuthService:
         logger.debug(f"DEBUG: Creating hospital: {hospital.name} with ID: {hospital.id}")
         self.db.add(hospital)
         logger.debug(f"DEBUG: Hospital added to session")
+        if tenant_db:
+            from app.services.tenant_database_provisioning import bootstrap_tenant_database
+
+            await self.db.flush()
+            await asyncio.to_thread(bootstrap_tenant_database, tenant_db, hospital, used_template)
         await self.db.commit()
+        invalidate_hospital_tenant_cache(hospital.id)
         logger.debug(f"DEBUG: Hospital committed to database")
         
         # Verify hospital was saved
@@ -206,7 +265,8 @@ class AuthService:
             "hospital_id": str(hospital.id),
             "name": hospital.name,
             "registration_number": hospital.registration_number,
-            "message": "Hospital created successfully"
+            "tenant_database_name": hospital.tenant_database_name,
+            "message": "Hospital created successfully",
         }
     
     async def create_hospital_admin(self, hospital_id: uuid.UUID, admin_data: Dict[str, Any]) -> Dict[str, Any]:

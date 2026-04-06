@@ -19,6 +19,10 @@ from app.database.session import (
     get_async_engine,
     AsyncSessionLocal,
     get_db_session,
+    get_platform_db_session,
+    get_tenant_session_factory,
+    resolve_tenant_database_name_for_hospital,
+    invalidate_hospital_tenant_cache,
 )
 
 logger = logging.getLogger(__name__)

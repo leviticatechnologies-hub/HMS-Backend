@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
-from app.core.database import get_db_session
+from app.core.database import get_platform_db_session
 from app.models.user import User, Role, Permission
 from app.core.enums import UserStatus
 
@@ -134,7 +134,7 @@ class SecurityManager:
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: AsyncSession = Depends(get_db_session)
+    db: AsyncSession = Depends(get_platform_db_session),
 ) -> User:
     """
     Get current authenticated user from JWT token.

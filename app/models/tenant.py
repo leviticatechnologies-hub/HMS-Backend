@@ -35,6 +35,9 @@ class Hospital(BaseModel):
     # Hospital status
     is_active = Column(Boolean, default=True, nullable=False)
     status = Column(String(20), default="ACTIVE", nullable=False)  # ACTIVE, SUSPENDED, INACTIVE
+
+    # Dedicated PostgreSQL database on the same server (platform/registry DB stores this name only)
+    tenant_database_name = Column(String(63), unique=True, nullable=True, index=True)
     
     # Configuration settings
     settings = Column(JSON_TYPE, nullable=False, default=lambda: {})

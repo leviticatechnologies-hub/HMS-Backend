@@ -54,56 +54,6 @@ class HospitalStatusUpdate(BaseModel):
         return self
 
 
-# ============================================================================
-# SUPER ADMIN - USER ACCOUNTS (EDIT / TOGGLE / DELETE)
-# ============================================================================
-
-class SuperAdminUserStatusUpdate(BaseModel):
-    """Toggle user status request (maps INACTIVE -> BLOCKED)."""
-
-    status: str = Field(..., description="User status: ACTIVE / INACTIVE")
-
-    @field_validator("status", mode="before")
-    @classmethod
-    def _normalize_status(cls, v):
-        if v is None:
-            return v
-        s = str(v).strip().upper()
-        if s == "INACTIVE":
-            return "BLOCKED"
-        return s
-
-
-class SuperAdminUserUpdate(BaseModel):
-    """
-    Update an existing hospital user account (expected to be a HOSPITAL_ADMIN).
-    Updates both Hospital + User fields.
-    """
-
-    hospital_name: str = Field(..., min_length=2, max_length=255)
-    email: EmailStr = Field(..., description="User email (also used as hospital email for consistency)")
-    phone_number: str = Field(..., pattern=r'^\+?[\d\s\-\(\)]{10,20}$')
-    address: str = Field(..., min_length=5)
-    city: str = Field(..., min_length=2, max_length=100)
-    state: str = Field(..., min_length=2, max_length=100)
-    country: str = Field(..., min_length=2, max_length=100)
-    pincode: str = Field(..., min_length=3, max_length=10)
-    admin_name: str = Field(..., min_length=2, max_length=255, description="Admin full name (first last)")
-    status: str = Field(..., description="ACTIVE / INACTIVE")
-    registration_no: str = Field(..., min_length=2, max_length=100, description="Hospital registration number")
-    hospital_logo: Optional[str] = Field(None, description="Hospital logo URL or base64")
-
-    @field_validator("status", mode="before")
-    @classmethod
-    def _normalize_status(cls, v):
-        if v is None:
-            return v
-        s = str(v).strip().upper()
-        if s == "INACTIVE":
-            return "BLOCKED"
-        return s
-
-
 class SubscriptionPlanCreate(BaseModel):
     """Subscription plan creation request"""
     name: str = Field(..., description="Plan name: FREE, STANDARD, or PREMIUM")
@@ -390,6 +340,9 @@ class HospitalDetailsOut(BaseModel):
     logo_url: Optional[str]
     status: str
     is_active: bool = True
+    tenant_database_name: Optional[str] = Field(
+        None, description="Dedicated Postgres database name on the same server (white-label tenant)"
+    )
     created_at: str
     updated_at: str
     subscription: Optional[Dict[str, Any]] = None
