@@ -10,10 +10,14 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, mo
 # ============================================================================
 
 class HospitalUpdate(BaseModel):
-    """Hospital update request"""
+    """Hospital update request (all fields optional; send only what changes)."""
     name: Optional[str] = Field(None, min_length=2, max_length=255)
     email: Optional[EmailStr] = None
-    phone: Optional[str] = Field(None, pattern=r'^\+?[\d\s\-\(\)]{10,20}$')
+    phone: Optional[str] = Field(
+        None,
+        description="Contact phone (displayed as Contact in hospital lists)",
+        pattern=r"^\+?[\d\s\-\(\)]{10,20}$",
+    )
     address: Optional[str] = Field(None, min_length=5)
     city: Optional[str] = Field(None, min_length=2, max_length=100)
     state: Optional[str] = Field(None, min_length=2, max_length=100)
@@ -30,8 +34,24 @@ class AdminStatusUpdate(BaseModel):
 
 
 class HospitalStatusUpdate(BaseModel):
-    """Hospital status update request"""
-    status: str = Field(..., description="New status: ACTIVE, SUSPENDED, or INACTIVE")
+    """
+    Hospital status update. Send either `status` (ACTIVE / SUSPENDED / INACTIVE) or `is_active`
+    (true → ACTIVE, false → INACTIVE) for toggle-style UIs.
+    """
+
+    status: Optional[str] = Field(None, description="ACTIVE, SUSPENDED, or INACTIVE")
+    is_active: Optional[bool] = Field(None, description="If set without status: true → ACTIVE, false → INACTIVE")
+
+    @model_validator(mode="after")
+    def _resolve_status(self):
+        s = self.status
+        if s is not None and str(s).strip() != "":
+            self.status = str(s).strip().upper()
+        elif self.is_active is not None:
+            self.status = "ACTIVE" if self.is_active else "INACTIVE"
+        if not self.status:
+            raise ValueError("Provide either status or is_active")
+        return self
 
 
 # ============================================================================
@@ -352,12 +372,13 @@ class HospitalListOut(BaseModel):
 
 
 class HospitalDetailsOut(BaseModel):
-    """Hospital details response"""
+    """Hospital details response (view/edit screens)."""
     id: str
     name: str
     registration_number: str
     email: str
     phone: str
+    contact: Optional[str] = Field(None, description="Same as phone; alias for UI Contact column")
     address: str
     city: str
     state: str
@@ -368,8 +389,12 @@ class HospitalDetailsOut(BaseModel):
     website: Optional[str]
     logo_url: Optional[str]
     status: str
+    is_active: bool = True
     created_at: str
     updated_at: str
+    subscription: Optional[Dict[str, Any]] = None
+    metrics: Optional[Dict[str, Any]] = None
+    settings: Optional[Dict[str, Any]] = None
 
 
 # --- Hospital Admin dashboard (matches HospitalAdminService dashboard methods) ---

@@ -17,7 +17,8 @@ async def get_analytics_overview(
     db: AsyncSession = Depends(get_db_session),
 ):
     """
-    Platform analytics dashboard: hospitals, subscriptions, revenue, patients, occupancy.
+    Super Admin dashboard overview: total hospitals, active users, revenue (optional in UI).
+    Subscriptions breakdown included. No patient/bed KPIs.
     Super Admin only.
     """
     service = SuperAdminService(db)

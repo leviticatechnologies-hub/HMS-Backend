@@ -156,38 +156,72 @@ async def update_hospital_status(
             detail={"code": "INVALID_HOSPITAL_ID", "message": "Invalid hospital ID format"}
         )
     
-    # Validate status value
-    valid_statuses = [HospitalStatus.ACTIVE, HospitalStatus.SUSPENDED, HospitalStatus.INACTIVE]
-    if status_data.status not in valid_statuses:
+    valid_statuses = {
+        HospitalStatus.ACTIVE.value,
+        HospitalStatus.SUSPENDED.value,
+        HospitalStatus.INACTIVE.value,
+    }
+    new_status = (status_data.status or "").strip().upper()
+    if new_status not in valid_statuses:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
-                "code": "INVALID_STATUS", 
-                "message": f"Invalid status. Valid options: {', '.join(valid_statuses)}"
-            }
+                "code": "INVALID_STATUS",
+                "message": f"Invalid status. Valid options: {', '.join(sorted(valid_statuses))}",
+            },
         )
-    
-    result = await service.update_hospital_status(hospital_uuid, status_data.status)
+
+    result = await service.update_hospital_status(hospital_uuid, new_status)
     return result
 
 
 @router.delete("/hospitals/{hospital_id}", tags=["Super Admin - Hospital Management"])
 async def delete_hospital(
     hospital_id: str,
-    confirm: bool = Query(False, description="Must be true to confirm deletion"),
     current_user: User = Depends(require_super_admin()),
-    service: SuperAdminService = Depends(get_super_admin_service)
+    service: SuperAdminService = Depends(get_super_admin_service),
 ):
     """
-    Soft delete hospital: set status INACTIVE, block all users.
-    Requires confirm=true. Use with extreme caution.
+    Soft-delete hospital (sets INACTIVE, blocks tenant users). Super Admin JWT is sufficient.
+    Returns standard `{ success, message, data }` for frontend clients.
     """
     try:
         hospital_uuid = uuid.UUID(hospital_id)
     except ValueError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": "INVALID_HOSPITAL_ID", "message": "Invalid hospital ID format"})
-    result = await service.delete_hospital(hospital_uuid, confirm=confirm)
-    return result
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "INVALID_HOSPITAL_ID", "message": "Invalid hospital ID format"},
+        )
+    result = await service.delete_hospital(hospital_uuid)
+    return SuccessResponse(
+        success=True,
+        message=result.get("message", "Hospital deactivated successfully"),
+        data=result,
+    ).dict()
+
+
+@router.post("/hospitals/{hospital_id}/deactivate", tags=["Super Admin - Hospital Management"])
+async def deactivate_hospital_post(
+    hospital_id: str,
+    current_user: User = Depends(require_super_admin()),
+    service: SuperAdminService = Depends(get_super_admin_service),
+):
+    """
+    Same as DELETE /hospitals/{id} for environments where DELETE is blocked or axios/fetch misconfigured.
+    """
+    try:
+        hospital_uuid = uuid.UUID(hospital_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "INVALID_HOSPITAL_ID", "message": "Invalid hospital ID format"},
+        )
+    result = await service.delete_hospital(hospital_uuid)
+    return SuccessResponse(
+        success=True,
+        message=result.get("message", "Hospital deactivated successfully"),
+        data=result,
+    ).dict()
 
 
 # ============================================================================
@@ -622,7 +656,7 @@ async def get_platform_analytics(
     current_user: User = Depends(require_super_admin()),
     service: SuperAdminService = Depends(get_super_admin_service)
 ):
-    """Dashboard: hospitals, active subscriptions, total revenue, patient trends, occupancy rates."""
+    """Dashboard overview: total hospitals, active users, revenue; subscription breakdown. No patient/bed KPIs."""
     result = await service.get_platform_analytics()
     return result
 

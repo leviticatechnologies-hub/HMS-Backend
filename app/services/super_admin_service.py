@@ -90,24 +90,35 @@ class SuperAdminService:
         # Apply filters
         conditions = []
         if status_filter:
-            # Filter by hospital active status (we'll need to add this field)
-            pass  # Will implement when we add is_active field to Hospital model
-        
+            sf = (status_filter or "").strip().upper()
+            if sf in (HospitalStatus.ACTIVE.value, HospitalStatus.SUSPENDED.value, HospitalStatus.INACTIVE.value):
+                conditions.append(Hospital.status == sf)
+            elif sf in ("TRUE", "1", "YES"):
+                conditions.append(Hospital.is_active.is_(True))
+            elif sf in ("FALSE", "0", "NO"):
+                conditions.append(Hospital.is_active.is_(False))
+
         if subscription_filter:
-            query = query.join(HospitalSubscription).join(SubscriptionPlanModel)
+            query = query.join(HospitalSubscription, HospitalSubscription.hospital_id == Hospital.id).join(
+                SubscriptionPlanModel, SubscriptionPlanModel.id == HospitalSubscription.plan_id
+            )
             conditions.append(SubscriptionPlanModel.name == subscription_filter)
-        
+
         if city_filter:
             conditions.append(Hospital.city.ilike(f"%{city_filter}%"))
-        
+
         if state_filter:
             conditions.append(Hospital.state.ilike(f"%{state_filter}%"))
-        
+
         if conditions:
             query = query.where(and_(*conditions))
-        
-        # Get total count
-        count_query = select(func.count(Hospital.id))
+
+        # Total count (must use same joins as main query when subscription filter is applied)
+        count_query = select(func.count(Hospital.id)).select_from(Hospital)
+        if subscription_filter:
+            count_query = count_query.join(
+                HospitalSubscription, HospitalSubscription.hospital_id == Hospital.id
+            ).join(SubscriptionPlanModel, SubscriptionPlanModel.id == HospitalSubscription.plan_id)
         if conditions:
             count_query = count_query.where(and_(*conditions))
         
@@ -209,6 +220,7 @@ class SuperAdminService:
             "registration_number": hospital.registration_number,
             "email": hospital.email,
             "phone": hospital.phone,
+            "contact": hospital.phone,
             "address": hospital.address,
             "city": hospital.city,
             "state": hospital.state,
@@ -218,6 +230,8 @@ class SuperAdminService:
             "established_date": hospital.established_date.isoformat() if hospital.established_date else None,
             "website": hospital.website,
             "logo_url": hospital.logo_url,
+            "status": hospital.status,
+            "is_active": bool(hospital.is_active),
             "settings": hospital.settings,
             "created_at": hospital.created_at.isoformat(),
             "updated_at": hospital.updated_at.isoformat(),
@@ -225,8 +239,8 @@ class SuperAdminService:
             "metrics": {
                 "total_users": user_count,
                 "admin_count": admin_count,
-                "is_active": True  # Will implement proper status tracking
-            }
+                "is_active": bool(hospital.is_active),
+            },
         }
     
     async def update_hospital(self, hospital_id: uuid.UUID, update_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -294,22 +308,33 @@ class SuperAdminService:
         # Update status
         old_status = hospital.status
         hospital.status = new_status
-        hospital.is_active = (new_status == HospitalStatus.ACTIVE)
+        hospital.is_active = new_status == HospitalStatus.ACTIVE
         hospital.updated_at = datetime.utcnow()
-        
-        # If suspending or deactivating, update all users' access
-        if new_status in [HospitalStatus.SUSPENDED, HospitalStatus.INACTIVE]:
-            # Get all users for this hospital
-            users_query = select(User).where(User.hospital_id == hospital_id)
-            users_result = await self.db.execute(users_query)
-            users = users_result.scalars().all()
-            
-            # Block all users except super admins
+
+        # Tenant user access: align with hospital operational status
+        users_query = (
+            select(User)
+            .options(selectinload(User.roles))
+            .where(User.hospital_id == hospital_id)
+        )
+        users_result = await self.db.execute(users_query)
+        users = users_result.scalars().all()
+
+        if new_status in (HospitalStatus.SUSPENDED, HospitalStatus.INACTIVE):
             for user in users:
                 user_roles = [role.name for role in user.roles]
                 if UserRole.SUPER_ADMIN not in user_roles:
                     user.status = UserStatus.BLOCKED
-        
+        elif (
+            new_status == HospitalStatus.ACTIVE
+            and old_status in (HospitalStatus.SUSPENDED, HospitalStatus.INACTIVE)
+        ):
+            # Reactivating a shut-down hospital: restore tenant users that were blocked with it
+            for user in users:
+                user_roles = [role.name for role in user.roles]
+                if UserRole.SUPER_ADMIN not in user_roles and user.status == UserStatus.BLOCKED:
+                    user.status = UserStatus.ACTIVE
+
         await self.db.commit()
         
         # TODO: Send notification emails to hospital admins
@@ -1071,10 +1096,14 @@ class SuperAdminService:
     # ============================================================================
 
     async def get_platform_analytics(self) -> Dict[str, Any]:
-        """Get platform-wide dashboard: hospitals, subscriptions, revenue, patient trends, occupancy."""
-        from app.models.billing import BillingPayment, Bill
-        from app.models.patient import PatientProfile, Appointment, Admission
-        from app.models.hospital import Bed, Ward
+        """
+        Super Admin dashboard overview KPIs:
+        - Total hospitals
+        - Active users (is_active + status ACTIVE)
+        - Revenue total (optional KPI in UI; still returned for charts/billing)
+        Does not include patient counts or bed/occupancy KPIs.
+        """
+        from app.models.billing import BillingPayment
 
         # Total hospitals
         hospitals_count = await self.db.execute(select(func.count(Hospital.id)))
@@ -1085,6 +1114,15 @@ class SuperAdminService:
             select(func.count(Hospital.id)).where(Hospital.status == HospitalStatus.ACTIVE)
         )
         active_hospitals_count = active_hospitals.scalar() or 0
+
+        # Active users platform-wide (excludes inactive / non-ACTIVE accounts)
+        active_users_result = await self.db.execute(
+            select(func.count(User.id)).where(
+                User.is_active.is_(True),
+                User.status == UserStatus.ACTIVE.value,
+            )
+        )
+        active_users = active_users_result.scalar() or 0
 
         # Subscriptions by plan
         sub_query = (
@@ -1104,28 +1142,13 @@ class SuperAdminService:
         rev_result = await self.db.execute(rev_query)
         total_revenue = float(rev_result.scalar() or 0)
 
-        # Patient count (all hospitals)
-        patient_count = await self.db.execute(select(func.count(PatientProfile.id)))
-        total_patients = patient_count.scalar() or 0
-
-        # Appointments this month
-        now = datetime.utcnow()
-        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        appt_count = await self.db.execute(
-            select(func.count(Appointment.id)).where(Appointment.created_at >= month_start)
-        )
-        appointments_this_month = appt_count.scalar() or 0
-
-        # Occupancy: total beds vs occupied
-        beds_total = await self.db.execute(select(func.count(Bed.id)))
-        beds_occupied = await self.db.execute(
-            select(func.count(Bed.id)).where(Bed.status == "OCCUPIED")
-        )
-        total_beds = beds_total.scalar() or 0
-        occupied_beds = beds_occupied.scalar() or 0
-        occupancy_rate = (occupied_beds / total_beds * 100) if total_beds > 0 else 0
-
         return {
+            "overview": {
+                "total_hospitals": total_hospitals,
+                "active_users": active_users,
+                "revenue_total": total_revenue,
+                "revenue_optional": True,
+            },
             "hospitals": {
                 "total": total_hospitals,
                 "active": active_hospitals_count,
@@ -1136,15 +1159,6 @@ class SuperAdminService:
             },
             "revenue": {
                 "total": total_revenue,
-            },
-            "patients": {
-                "total": total_patients,
-                "appointments_this_month": appointments_this_month,
-            },
-            "occupancy": {
-                "total_beds": total_beds,
-                "occupied_beds": occupied_beds,
-                "occupancy_rate_percent": round(occupancy_rate, 2),
             },
         }
 
@@ -1578,31 +1592,42 @@ class SuperAdminService:
             "resources": [],
         }
 
-    async def delete_hospital(self, hospital_id: uuid.UUID, confirm: bool = False) -> Dict[str, Any]:
-        """Soft delete hospital: set status INACTIVE, block users. Requires confirm=True."""
+    async def delete_hospital(self, hospital_id: uuid.UUID) -> Dict[str, Any]:
+        """Soft-delete hospital: INACTIVE + block tenant users. Super Admin auth is the only gate."""
+        from sqlalchemy.exc import SQLAlchemyError
+
         hospital = await self._get_hospital_by_id(hospital_id)
         if not hospital:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"code": "HOSPITAL_NOT_FOUND", "message": "Hospital not found"}
             )
-        if not confirm:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"code": "CONFIRM_REQUIRED", "message": "Set confirm=true to delete hospital"}
-            )
-        old_status = hospital.status
         hospital.status = HospitalStatus.INACTIVE
         hospital.is_active = False
         hospital.updated_at = datetime.utcnow()
-        # Block all users
-        users_result = await self.db.execute(select(User).where(User.hospital_id == hospital_id))
+        users_result = await self.db.execute(
+            select(User).options(selectinload(User.roles)).where(User.hospital_id == hospital_id)
+        )
         for user in users_result.scalars().all():
             user_roles = [r.name for r in user.roles]
             if UserRole.SUPER_ADMIN not in user_roles:
                 user.status = UserStatus.BLOCKED
-        await self.db.commit()
-        return {"hospital_id": str(hospital_id), "message": "Hospital deactivated successfully"}
+        try:
+            await self.db.commit()
+        except SQLAlchemyError as e:
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "code": "HOSPITAL_DELETE_FAILED",
+                    "message": "Could not deactivate hospital. Try again or contact support.",
+                },
+            ) from e
+        return {
+            "hospital_id": str(hospital_id),
+            "message": "Hospital deactivated successfully",
+            "status": HospitalStatus.INACTIVE.value,
+        }
 
     async def reset_admin_password(self, admin_id: uuid.UUID) -> Dict[str, Any]:
         """Reset hospital admin password: generate temp, set hash, return temp password."""
