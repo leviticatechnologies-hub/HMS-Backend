@@ -2,10 +2,21 @@
 Main API router for Hospital Management SaaS Platform.
 Organized by functional areas: Admin, Doctor, Patient, Pharmacy, Lab, Management, Billing & Accounts.
 """
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 import logging
 
+from app.core.plan_features import (
+    FEATURE_LAB_TESTS,
+    FEATURE_PHARMACY,
+    FEATURE_VIDEO_CONSULTATION,
+)
+from app.dependencies.plan_features import require_plan_feature
+
 logger = logging.getLogger(__name__)
+
+_pharmacy_dep = [Depends(require_plan_feature(FEATURE_PHARMACY))]
+_telemed_dep = [Depends(require_plan_feature(FEATURE_VIDEO_CONSULTATION))]
+_lab_dep = [Depends(require_plan_feature(FEATURE_LAB_TESTS))]
 
 # Create main API router
 api_router = APIRouter(prefix="/api/v1")
@@ -137,15 +148,30 @@ try:
     from app.api.v1.routers.pharmacy.alerts import router as pharmacy_alerts_router
     from app.api.v1.routers.pharmacy.reports import router as pharmacy_reports_router
     
-    api_router.include_router(pharmacy_medicines_router, prefix="/pharmacy", tags=["Pharmacy - Medicines"])
-    api_router.include_router(pharmacy_suppliers_router, prefix="/pharmacy", tags=["Pharmacy - Suppliers"])
-    api_router.include_router(pharmacy_purchase_orders_router, prefix="/pharmacy", tags=["Pharmacy - Purchase Orders"])
-    api_router.include_router(pharmacy_grn_router, prefix="/pharmacy", tags=["Pharmacy - GRN"])
-    api_router.include_router(pharmacy_stock_router, prefix="/pharmacy", tags=["Pharmacy - Stock"])
-    api_router.include_router(pharmacy_sales_router, prefix="/pharmacy", tags=["Pharmacy - Sales"])
-    api_router.include_router(pharmacy_returns_router, prefix="/pharmacy", tags=["Pharmacy - Returns"])
-    api_router.include_router(pharmacy_alerts_router, prefix="/pharmacy", tags=["Pharmacy - Alerts"])
-    api_router.include_router(pharmacy_reports_router, prefix="/pharmacy", tags=["Pharmacy - Reports"])
+    api_router.include_router(
+        pharmacy_medicines_router, prefix="/pharmacy", tags=["Pharmacy - Medicines"], dependencies=_pharmacy_dep
+    )
+    api_router.include_router(
+        pharmacy_suppliers_router, prefix="/pharmacy", tags=["Pharmacy - Suppliers"], dependencies=_pharmacy_dep
+    )
+    api_router.include_router(
+        pharmacy_purchase_orders_router,
+        prefix="/pharmacy",
+        tags=["Pharmacy - Purchase Orders"],
+        dependencies=_pharmacy_dep,
+    )
+    api_router.include_router(pharmacy_grn_router, prefix="/pharmacy", tags=["Pharmacy - GRN"], dependencies=_pharmacy_dep)
+    api_router.include_router(pharmacy_stock_router, prefix="/pharmacy", tags=["Pharmacy - Stock"], dependencies=_pharmacy_dep)
+    api_router.include_router(pharmacy_sales_router, prefix="/pharmacy", tags=["Pharmacy - Sales"], dependencies=_pharmacy_dep)
+    api_router.include_router(
+        pharmacy_returns_router, prefix="/pharmacy", tags=["Pharmacy - Returns"], dependencies=_pharmacy_dep
+    )
+    api_router.include_router(
+        pharmacy_alerts_router, prefix="/pharmacy", tags=["Pharmacy - Alerts"], dependencies=_pharmacy_dep
+    )
+    api_router.include_router(
+        pharmacy_reports_router, prefix="/pharmacy", tags=["Pharmacy - Reports"], dependencies=_pharmacy_dep
+    )
     logger.info("✓ Pharmacy routers loaded (9 routers - complete module)")
 except ImportError as e:
     logger.error(f"✗ Failed to load pharmacy routers: {e}")
@@ -160,12 +186,12 @@ try:
     from app.api.v1.routers.telemed.vitals import router as telemed_vitals_router
     from app.api.v1.routers.telemed.notifications import router as telemed_notifications_router
     from app.api.v1.routers.telemed.config import router as telemed_config_router
-    api_router.include_router(telemed_appointments_router, prefix="/telemed")
-    api_router.include_router(telemed_sessions_router, prefix="/telemed")
-    api_router.include_router(telemed_prescriptions_router, prefix="/telemed")
-    api_router.include_router(telemed_vitals_router, prefix="/telemed")
-    api_router.include_router(telemed_notifications_router, prefix="/telemed")
-    api_router.include_router(telemed_config_router, prefix="/telemed")
+    api_router.include_router(telemed_appointments_router, prefix="/telemed", dependencies=_telemed_dep)
+    api_router.include_router(telemed_sessions_router, prefix="/telemed", dependencies=_telemed_dep)
+    api_router.include_router(telemed_prescriptions_router, prefix="/telemed", dependencies=_telemed_dep)
+    api_router.include_router(telemed_vitals_router, prefix="/telemed", dependencies=_telemed_dep)
+    api_router.include_router(telemed_notifications_router, prefix="/telemed", dependencies=_telemed_dep)
+    api_router.include_router(telemed_config_router, prefix="/telemed", dependencies=_telemed_dep)
     logger.info("✓ Telemedicine routers loaded")
 except ImportError as e:
     logger.error(f"✗ Failed to load telemedicine routers: {e}")
@@ -181,12 +207,12 @@ try:
     from app.api.v1.routers.lab.lab_report_access import router as lab_report_access_router
     from app.api.v1.routers.lab.lab_audit_compliance import router as lab_audit_compliance_router
 
-    api_router.include_router(lab_test_registration_router)
-    api_router.include_router(lab_sample_collection_router)
-    api_router.include_router(lab_result_entry_router)
-    api_router.include_router(lab_equipment_qc_router)
-    api_router.include_router(lab_report_access_router)
-    api_router.include_router(lab_audit_compliance_router)
+    api_router.include_router(lab_test_registration_router, dependencies=_lab_dep)
+    api_router.include_router(lab_sample_collection_router, dependencies=_lab_dep)
+    api_router.include_router(lab_result_entry_router, dependencies=_lab_dep)
+    api_router.include_router(lab_equipment_qc_router, dependencies=_lab_dep)
+    api_router.include_router(lab_report_access_router, dependencies=_lab_dep)
+    api_router.include_router(lab_audit_compliance_router, dependencies=_lab_dep)
     logger.info("✓ Lab routers loaded (6 routers)")
 except ImportError as e:
     logger.error(f"✗ Failed to load lab routers: {e}")

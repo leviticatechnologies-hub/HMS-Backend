@@ -10,8 +10,12 @@ from typing import Optional, List, Dict, Any
 
 from app.api.deps import (
     get_db_session, require_hospital_admin, require_hospital_admin_context,
-    get_current_hospital_context
+    get_current_hospital_context,
 )
+from app.core.database import get_platform_db_session
+from app.dependencies.auth import require_hospital_context
+from app.schemas.plan_features import HospitalFeatureFlagsOut
+from app.services.subscription_feature_service import get_plan_info_for_hospital
 from app.services.hospital_admin_service import HospitalAdminService
 from app.models.user import User
 from app.core.enums import UserRole
@@ -41,6 +45,34 @@ async def get_hospital_admin_service(
 ) -> HospitalAdminService:
     """Get Hospital Admin service instance with proper access control"""
     return HospitalAdminService(db, context["hospital_id"])
+
+
+# ============================================================================
+# PLATFORM SETTINGS — subscription feature flags (Dashboard / module visibility)
+# ============================================================================
+
+
+@router.get(
+    "/platform-settings/features",
+    response_model=HospitalFeatureFlagsOut,
+    tags=["Hospital Admin - Platform Settings"],
+)
+async def get_hospital_subscription_features(
+    _user: User = Depends(require_hospital_admin()),
+    context: Dict[str, Any] = Depends(require_hospital_context),
+    db: AsyncSession = Depends(get_platform_db_session),
+):
+    """
+    Effective flags for `lab_tests`, `video_consultation`, `pharmacy` from the hospital's plan
+    (`subscription_plans.features` overrides defaults: Basic/STANDARD vs PREMIUM).
+    """
+    hid = uuid.UUID(context["hospital_id"])
+    pname, display, feats = await get_plan_info_for_hospital(db, hid)
+    return HospitalFeatureFlagsOut(
+        plan_name=pname,
+        plan_display_name=display,
+        features=feats,
+    )
 
 
 # ============================================================================

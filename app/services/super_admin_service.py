@@ -843,32 +843,32 @@ class SuperAdminService:
 
     async def get_platform_analytics(self) -> Dict[str, Any]:
         """
-        Super Admin dashboard overview KPIs:
-        - Total hospitals
-        - Active users (is_active + status ACTIVE)
-        - Revenue total (optional KPI in UI; still returned for charts/billing)
-        Does not include patient counts or bed/occupancy KPIs.
+        Super Admin dashboard overview KPI cards:
+        - Total appointments, beds, billing (successful payments), doctors (platform-wide).
+        Subscription breakdown retained. No hospital-count or admin-count KPIs here.
         """
         from app.models.billing import BillingPayment
+        from app.models.hospital import Bed
+        from app.models.patient import Appointment
+        from app.models.doctor import DoctorProfile
 
-        # Total hospitals
-        hospitals_count = await self.db.execute(select(func.count(Hospital.id)))
-        total_hospitals = hospitals_count.scalar() or 0
+        total_appointments = (
+            await self.db.execute(select(func.count(Appointment.id)))
+        ).scalar() or 0
 
-        # Active hospitals (status ACTIVE)
-        active_hospitals = await self.db.execute(
-            select(func.count(Hospital.id)).where(Hospital.status == HospitalStatus.ACTIVE)
-        )
-        active_hospitals_count = active_hospitals.scalar() or 0
+        total_beds = (
+            await self.db.execute(select(func.count(Bed.id)))
+        ).scalar() or 0
 
-        # Active users platform-wide (excludes inactive / non-ACTIVE accounts)
-        active_users_result = await self.db.execute(
-            select(func.count(User.id)).where(
-                User.is_active.is_(True),
-                User.status == UserStatus.ACTIVE.value,
-            )
-        )
-        active_users = active_users_result.scalar() or 0
+        total_doctors = (
+            await self.db.execute(select(func.count(DoctorProfile.id)))
+        ).scalar() or 0
+
+        rev_query = select(
+            func.coalesce(func.sum(BillingPayment.amount), 0).label("total")
+        ).where(BillingPayment.status == "SUCCESS")
+        rev_result = await self.db.execute(rev_query)
+        total_billing = float(rev_result.scalar() or 0)
 
         # Subscriptions by plan
         sub_query = (
@@ -881,30 +881,19 @@ class SuperAdminService:
         sub_result = await self.db.execute(sub_query)
         subscriptions_by_plan = {row[0]: row[1] for row in sub_result.all()}
 
-        # Total revenue (sum of SUCCESS payments across all hospitals)
-        rev_query = select(
-            func.coalesce(func.sum(BillingPayment.amount), 0).label("total")
-        ).where(BillingPayment.status == "SUCCESS")
-        rev_result = await self.db.execute(rev_query)
-        total_revenue = float(rev_result.scalar() or 0)
-
         return {
             "overview": {
-                "total_hospitals": total_hospitals,
-                "active_users": active_users,
-                "revenue_total": total_revenue,
-                "revenue_optional": True,
-            },
-            "hospitals": {
-                "total": total_hospitals,
-                "active": active_hospitals_count,
+                "total_appointments": int(total_appointments),
+                "total_beds": int(total_beds),
+                "total_billing": total_billing,
+                "total_doctors": int(total_doctors),
             },
             "subscriptions": {
                 "by_plan": subscriptions_by_plan,
                 "active_count": sum(subscriptions_by_plan.values()),
             },
             "revenue": {
-                "total": total_revenue,
+                "total": total_billing,
             },
         }
 

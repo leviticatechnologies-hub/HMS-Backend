@@ -100,6 +100,64 @@ async def create_ticket_as_staff(
     return result
 
 
+def _ticket_to_dict(t: SupportTicket) -> Dict[str, Any]:
+    return {
+        "id": str(t.id),
+        "hospital_id": str(t.hospital_id),
+        "raised_by_user_id": str(t.raised_by_user_id),
+        "subject": t.subject,
+        "description": t.description,
+        "status": t.status,
+        "priority": t.priority,
+        "resolution_notes": t.resolution_notes,
+        "resolved_at": t.resolved_at.isoformat() if t.resolved_at else None,
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+        "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+    }
+
+
+@router.get("/staff/tickets")
+async def list_my_support_tickets_as_staff(
+    status: Optional[str] = Query(None, description="Filter by status (e.g. OPEN, RESOLVED)"),
+    completed_only: bool = Query(
+        False,
+        description="If true, only RESOLVED and CLOSED tickets (what staff usually call completed)",
+    ),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+    ctx: Dict[str, Any] = Depends(require_hospital_context),
+):
+    """
+    **Staff** — list support tickets **you** raised for this hospital (open, in progress, resolved).
+    Use `completed_only=true` or `status=RESOLVED` to see completed tickets.
+    """
+    hospital_id: uuid.UUID = ctx["hospital_id"]
+    conditions = [
+        SupportTicket.hospital_id == hospital_id,
+        SupportTicket.raised_by_user_id == current_user.id,
+    ]
+    if completed_only:
+        conditions.append(or_(SupportTicket.status == "RESOLVED", SupportTicket.status == "CLOSED"))
+    elif status:
+        conditions.append(SupportTicket.status == status)
+    q = (
+        select(SupportTicket)
+        .where(*conditions)
+        .order_by(desc(SupportTicket.updated_at), desc(SupportTicket.created_at))
+        .offset(skip)
+        .limit(limit)
+    )
+    r = await db.execute(q)
+    tickets = r.scalars().all()
+    return {
+        "tickets": [_ticket_to_dict(t) for t in tickets],
+        "skip": skip,
+        "limit": limit,
+    }
+
+
 @router.post("/hospital-admin/tickets", status_code=status.HTTP_201_CREATED)
 async def create_ticket_as_hospital_admin(
     body: SupportTicketCreateIn,
@@ -159,22 +217,7 @@ async def list_tickets_for_hospital_admin(
     r = await db.execute(q)
     tickets = r.scalars().all()
     return {
-        "tickets": [
-            {
-                "id": str(t.id),
-                "hospital_id": str(t.hospital_id),
-                "raised_by_user_id": str(t.raised_by_user_id),
-                "subject": t.subject,
-                "description": t.description,
-                "status": t.status,
-                "priority": t.priority,
-                "resolution_notes": t.resolution_notes,
-                "resolved_at": t.resolved_at.isoformat() if t.resolved_at else None,
-                "created_at": t.created_at.isoformat() if t.created_at else None,
-                "updated_at": t.updated_at.isoformat() if t.updated_at else None,
-            }
-            for t in tickets
-        ],
+        "tickets": [_ticket_to_dict(t) for t in tickets],
         "skip": skip,
         "limit": limit,
     }
@@ -201,22 +244,7 @@ async def list_completed_tickets_for_hospital_admin(
     r = await db.execute(q)
     tickets = r.scalars().all()
     return {
-        "tickets": [
-            {
-                "id": str(t.id),
-                "hospital_id": str(t.hospital_id),
-                "raised_by_user_id": str(t.raised_by_user_id),
-                "subject": t.subject,
-                "description": t.description,
-                "status": t.status,
-                "priority": t.priority,
-                "resolution_notes": t.resolution_notes,
-                "resolved_at": t.resolved_at.isoformat() if t.resolved_at else None,
-                "created_at": t.created_at.isoformat() if t.created_at else None,
-                "updated_at": t.updated_at.isoformat() if t.updated_at else None,
-            }
-            for t in tickets
-        ],
+        "tickets": [_ticket_to_dict(t) for t in tickets],
         "skip": skip,
         "limit": limit,
     }

@@ -6,7 +6,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api.deps import get_db_session, require_super_admin
 from app.services.super_admin_service import SuperAdminService
@@ -32,7 +32,70 @@ async def get_super_admin_service(db: AsyncSession = Depends(get_db_session)) ->
     return SuperAdminService(db)
 
 
-# Note: verify_super_admin function removed - using centralized require_super_admin() dependency
+class SuperAdminProfileOut(BaseModel):
+    email: str
+    first_name: str
+    last_name: str
+    phone: str
+    middle_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    timezone: Optional[str] = None
+    language: Optional[str] = None
+
+
+class SuperAdminProfileUpdate(BaseModel):
+    first_name: Optional[str] = Field(None, max_length=100)
+    last_name: Optional[str] = Field(None, max_length=100)
+    phone: Optional[str] = Field(None, max_length=20)
+    middle_name: Optional[str] = Field(None, max_length=100)
+    avatar_url: Optional[str] = Field(None, max_length=500)
+    timezone: Optional[str] = Field(None, max_length=50)
+    language: Optional[str] = Field(None, max_length=10)
+
+
+# ============================================================================
+# SUPER ADMIN PROFILE SETTINGS
+# ============================================================================
+
+
+@router.get("/profile", response_model=SuccessResponse[SuperAdminProfileOut], tags=["Super Admin - Profile Settings"])
+async def get_super_admin_profile(
+    current_user: User = Depends(require_super_admin()),
+):
+    data = SuperAdminProfileOut(
+        email=current_user.email,
+        first_name=current_user.first_name,
+        last_name=current_user.last_name,
+        phone=current_user.phone,
+        middle_name=current_user.middle_name,
+        avatar_url=current_user.avatar_url,
+        timezone=current_user.timezone,
+        language=current_user.language,
+    )
+    return SuccessResponse(success=True, message="OK", data=data)
+
+
+@router.patch("/profile", response_model=SuccessResponse[SuperAdminProfileOut], tags=["Super Admin - Profile Settings"])
+async def update_super_admin_profile(
+    body: SuperAdminProfileUpdate,
+    current_user: User = Depends(require_super_admin()),
+    db: AsyncSession = Depends(get_db_session),
+):
+    for k, v in body.model_dump(exclude_unset=True).items():
+        setattr(current_user, k, v)
+    await db.commit()
+    await db.refresh(current_user)
+    data = SuperAdminProfileOut(
+        email=current_user.email,
+        first_name=current_user.first_name,
+        last_name=current_user.last_name,
+        phone=current_user.phone,
+        middle_name=current_user.middle_name,
+        avatar_url=current_user.avatar_url,
+        timezone=current_user.timezone,
+        language=current_user.language,
+    )
+    return SuccessResponse(success=True, message="Profile updated", data=data)
 
 
 # ============================================================================
@@ -581,7 +644,7 @@ async def get_platform_analytics(
     current_user: User = Depends(require_super_admin()),
     service: SuperAdminService = Depends(get_super_admin_service)
 ):
-    """Dashboard overview: total hospitals, active users, revenue; subscription breakdown. No patient/bed KPIs."""
+    """Dashboard overview KPI cards: total appointments, beds, billing, doctors; subscription breakdown."""
     result = await service.get_platform_analytics()
     return result
 
