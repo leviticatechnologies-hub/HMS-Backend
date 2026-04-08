@@ -137,9 +137,30 @@ class ClinicalService:
         user_context = self.get_user_context(current_user)
         receptionist = await self.get_receptionist_profile(user_context)
         
+        hospital_id_str = user_context.get("hospital_id")
+        if not hospital_id_str:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Hospital ID is required. Receptionist must be associated with a hospital.",
+            )
+        try:
+            hospital_id_uuid = uuid.UUID(hospital_id_str) if isinstance(hospital_id_str, str) else hospital_id_str
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid hospital_id in user context.",
+            )
+
+        phone_norm = (patient_data.get("phone") or "").strip()
+        if not phone_norm:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="phone is required",
+            )
+        
         # Check if phone already exists
         existing_phone = await self.db.execute(
-            select(User).where(User.phone == patient_data["phone"])
+            select(User).where(and_(User.phone == phone_norm, User.hospital_id == hospital_id_uuid))
         )
         if existing_phone.first():
             raise HTTPException(
@@ -151,7 +172,7 @@ class ClinicalService:
         email_norm = (patient_data.get("email") or "").strip().lower() if patient_data.get("email") else None
         if email_norm:
             existing_email = await self.db.execute(
-                select(User).where(User.email == email_norm)
+                select(User).where(and_(User.email == email_norm, User.hospital_id == hospital_id_uuid))
             )
             if existing_email.first():
                 raise HTTPException(
@@ -195,9 +216,9 @@ class ClinicalService:
         
         user = User(
             id=uuid.uuid4(),
-            hospital_id=user_context["hospital_id"],
+            hospital_id=hospital_id_uuid,
             email=email_norm,
-            phone=patient_data["phone"],
+            phone=phone_norm,
             password_hash=password_hash,
             first_name=patient_data["first_name"],
             last_name=patient_data["last_name"],
@@ -227,7 +248,7 @@ class ClinicalService:
         # Create PatientProfile
         patient_profile = PatientProfile(
             id=uuid.uuid4(),
-            hospital_id=user_context["hospital_id"],
+            hospital_id=hospital_id_uuid,
             user_id=user.id,
             patient_id=patient_ref,
             date_of_birth=patient_data.get("date_of_birth"),
@@ -241,19 +262,17 @@ class ClinicalService:
         
         self.db.add(patient_profile)
         await self.db.flush()
-
-        hospital_id_str = user_context.get("hospital_id")
+        
         hospital_name = None
-        if hospital_id_str:
-            try:
-                hospital_result = await self.db.execute(
-                    select(Hospital).where(Hospital.id == uuid.UUID(hospital_id_str))
-                )
-                hospital = hospital_result.scalar_one_or_none()
-                if hospital:
-                    hospital_name = hospital.name
-            except (ValueError, TypeError):
-                pass
+        try:
+            hospital_result = await self.db.execute(
+                select(Hospital).where(Hospital.id == hospital_id_uuid)
+            )
+            hospital = hospital_result.scalar_one_or_none()
+            if hospital:
+                hospital_name = hospital.name
+        except Exception:
+            hospital_name = None
 
         await self.db.commit()
 
