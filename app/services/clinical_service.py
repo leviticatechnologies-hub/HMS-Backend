@@ -2,6 +2,7 @@
 Clinical Operations Service
 Handles OPD, IPD, and nursing management business logic.
 """
+import logging
 import uuid
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta, date, timezone
@@ -17,6 +18,8 @@ from app.models.tenant import Hospital
 from app.core.enums import UserRole, AppointmentStatus, UserStatus
 from app.core.utils import generate_patient_ref, generate_appointment_ref
 from app.core.security import SecurityManager
+
+logger = logging.getLogger(__name__)
 
 
 class ClinicalService:
@@ -252,42 +255,6 @@ class ClinicalService:
             except (ValueError, TypeError):
                 pass
 
-        if portal_password and email_norm:
-            from app.services.email_service import EmailService
-
-            es = EmailService()
-            if not es.is_smtp_configured():
-                await self.db.rollback()
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail={
-                        "code": "SMTP_NOT_CONFIGURED",
-                        "message": (
-                            "Patient portal registration requires delivering login details by email. "
-                            "Configure SMTP_USER, SMTP_PASS, SMTP_HOST, and EMAIL_FROM, then try again."
-                        ),
-                    },
-                )
-            sent = await es.send_patient_portal_credentials_email(
-                to_email=email_norm,
-                first_name=patient_data["first_name"],
-                login_email=email_norm,
-                password_plain=portal_password,
-                hospital_name=hospital_name,
-            )
-            if not sent:
-                await self.db.rollback()
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail={
-                        "code": "CREDENTIALS_EMAIL_FAILED",
-                        "message": (
-                            "Login details could not be sent by email after multiple attempts. "
-                            "Registration was not saved. Check SMTP connectivity or provider status and try again."
-                        ),
-                    },
-                )
-
         await self.db.commit()
 
         result = {
@@ -312,8 +279,51 @@ class ClinicalService:
         if hospital_name:
             result["hospital_name"] = hospital_name
 
+        send_credentials = patient_data.get("send_credentials_email", True)
         if portal_password and email_norm:
-            result["credentials_email_sent"] = True
+            result["credentials_email_sent"] = False
+            result["send_credentials_email_requested"] = bool(send_credentials)
+            if not send_credentials:
+                result["credentials_email_hint"] = (
+                    "Email send skipped (send_credentials_email=false). Share login email and password with the patient manually."
+                )
+            else:
+                try:
+                    from app.services.email_service import EmailService
+
+                    es = EmailService()
+                    if not es.is_smtp_configured():
+                        result["credentials_email_hint"] = (
+                            "SMTP not configured on server (SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM). "
+                            "Patient account is saved; share portal credentials manually or set env vars on Render."
+                        )
+                        logger.warning(
+                            "Portal credentials not emailed: SMTP not configured for %s",
+                            email_norm,
+                        )
+                    else:
+                        sent = await es.send_patient_portal_credentials_email(
+                            to_email=email_norm,
+                            first_name=patient_data["first_name"],
+                            login_email=email_norm,
+                            password_plain=portal_password,
+                            hospital_name=hospital_name,
+                        )
+                        result["credentials_email_sent"] = bool(sent)
+                        if not sent:
+                            result["credentials_email_hint"] = (
+                                "Email send failed after retries. Patient is registered; share login details manually "
+                                "or check Render logs / SendGrid firewall / SMTP_PORT."
+                            )
+                            logger.warning(
+                                "Portal credentials email failed (SMTP configured) for %s",
+                                email_norm,
+                            )
+                except Exception as exc:
+                    result["credentials_email_hint"] = (
+                        f"Email error ({type(exc).__name__}). Patient is registered; share credentials manually."
+                    )
+                    logger.exception("Unexpected error sending portal credentials to %s", email_norm)
 
         return result
     

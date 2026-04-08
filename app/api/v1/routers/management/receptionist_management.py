@@ -77,15 +77,14 @@ async def register_patient(
     4. Set hospital association
     
     If `password` is omitted, a one-time `temp_password` is returned (email remains unverified for patient login).
-    If `password` is set, login details are emailed before the transaction commits (SMTP must be configured).
-    Email is retried automatically; if delivery still fails, registration is rolled back and returns 503.
+    If `password` is set, `send_credentials_email` (default true) triggers a best-effort SMTP send **after** the patient is saved.
+    If SMTP fails or is not configured, registration still succeeds; see `credentials_email_sent` and `credentials_email_hint`.
     
     Returns:
-    - Patient ID, optional temp_password or portal_login_enabled, `credentials_email_sent: true` when portal + email
-    - Registration confirmation
+    - Patient ID, optional temp_password, portal_login_enabled, credentials_email_sent, optional hints
     """
     clinical_service = ClinicalService(db)
-    result = await clinical_service.register_opd_patient(patient_data.dict(), current_user)
+    result = await clinical_service.register_opd_patient(patient_data.model_dump(), current_user)
     return success_response(message="Patient registered successfully", data=result)
 
 

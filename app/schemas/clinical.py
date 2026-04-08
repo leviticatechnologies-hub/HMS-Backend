@@ -45,6 +45,14 @@ class PatientRegistrationCreate(BaseModel):
             raise ValueError("email is required when password is set so the patient can use patient login")
         return self
 
+    send_credentials_email: bool = Field(
+        default=True,
+        description=(
+            "If true (default), attempts to email portal login details after registration. "
+            "Registration always saves even if SMTP is misconfigured or sending fails — check `credentials_email_sent` in the response."
+        ),
+    )
+
 
 class AppointmentSchedulingCreate(BaseModel):
     """Schedule appointment for an existing patient (register via POST /receptionist/patients/register first)."""
