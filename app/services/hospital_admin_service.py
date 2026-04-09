@@ -2910,49 +2910,58 @@ class HospitalAdminService:
                 detail={"code": "BED_NOT_FOUND", "message": "Bed not found"}
             )
         
-        # Validate status
-        if new_status not in [bs.value for bs in BedStatus]:
+        allowed_statuses = {bs.value for bs in BedStatus}
+        new_status_norm = str(new_status).strip().upper()
+        if new_status_norm not in allowed_statuses:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"code": "INVALID_BED_STATUS", "message": f"Invalid bed status. Must be one of: {', '.join([bs.value for bs in BedStatus])}"}
+                detail={
+                    "code": "INVALID_BED_STATUS",
+                    "message": f"Invalid bed status. Must be one of: {', '.join(sorted(allowed_statuses))}",
+                },
             )
-        
+
         old_status = bed.status
-        
-        # Handle status-specific logic
-        if new_status == BedStatus.OCCUPIED:
-            if not patient_id:
+        old_status_label = (
+            old_status.value if isinstance(old_status, BedStatus) else str(old_status)
+        )
+
+        # Handle status-specific logic (compare using normalized enum values)
+        if new_status_norm == BedStatus.OCCUPIED.value:
+            if not patient_id or not str(patient_id).strip():
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail={"code": "PATIENT_ID_REQUIRED", "message": "Patient ID is required when marking bed as occupied"}
+                    detail={
+                        "code": "PATIENT_ID_REQUIRED",
+                        "message": "patient_id is required when marking bed as OCCUPIED (profile UUID or hospital ref e.g. PAT-001)",
+                    },
                 )
-            
-            # Validate patient exists in this hospital
-            patient = await self._get_hospital_patient(uuid.UUID(patient_id))
-            if not patient:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail={"code": "PATIENT_NOT_FOUND", "message": "Patient not found in this hospital"}
-                )
-            
-            bed.current_patient_id = uuid.UUID(patient_id)
+
+            profile_uuid = await self._resolve_patient_profile_uuid(patient_id)
+            bed.current_patient_id = profile_uuid
             bed.occupied_since = datetime.utcnow()
-            
-        elif new_status == BedStatus.AVAILABLE:
+            patient_id_out = str(profile_uuid)
+
+        elif new_status_norm == BedStatus.AVAILABLE.value:
             # Clear patient assignment
             bed.current_patient_id = None
             bed.occupied_since = None
             bed.last_cleaned = datetime.utcnow()
-            
-        elif new_status == BedStatus.MAINTENANCE:
+            patient_id_out = None
+
+        elif new_status_norm == BedStatus.MAINTENANCE.value:
             # Clear patient assignment and add maintenance notes
             bed.current_patient_id = None
             bed.occupied_since = None
             if maintenance_notes:
                 bed.maintenance_notes = maintenance_notes
-        
-        # Update bed status
-        bed.status = new_status
+            patient_id_out = None
+
+        else:
+            patient_id_out = None
+
+        # Update bed status (persist canonical uppercase value)
+        bed.status = new_status_norm
         bed.updated_at = datetime.utcnow()
 
         bed_id_str = str(bed.id)
@@ -2962,11 +2971,11 @@ class HospitalAdminService:
         return {
             "bed_id": bed_id_str,
             "bed_code": bed_code_str,
-            "old_status": old_status,
-            "new_status": new_status,
-            "patient_id": patient_id,
+            "old_status": old_status_label,
+            "new_status": new_status_norm,
+            "patient_id": patient_id_out,
             "maintenance_notes": maintenance_notes,
-            "message": f"Bed status updated from {old_status} to {new_status}",
+            "message": f"Bed status updated from {old_status_label} to {new_status_norm}",
         }
 
     # ============================================================================
@@ -4667,6 +4676,63 @@ class HospitalAdminService:
         )
         result = await self.db.execute(query)
         return result.scalar_one_or_none()
+    
+    async def _resolve_patient_profile_uuid(self, raw: Any) -> uuid.UUID:
+        """Resolve ``patient_profiles.id`` from a UUID or hospital patient ref (e.g. PAT-001)."""
+        from app.models.patient import PatientProfile
+
+        if isinstance(raw, uuid.UUID):
+            patient = await self._get_hospital_patient(raw)
+            if not patient:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={
+                        "code": "PATIENT_NOT_FOUND",
+                        "message": "Patient not found in this hospital",
+                    },
+                )
+            return patient.id
+        s = str(raw).strip()
+        if not s:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "MISSING_PATIENT_ID", "message": "patient_id is required"},
+            )
+        try:
+            uid = uuid.UUID(s)
+        except ValueError:
+            uid = None
+        if uid is not None:
+            patient = await self._get_hospital_patient(uid)
+            if not patient:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={
+                        "code": "PATIENT_NOT_FOUND",
+                        "message": "Patient not found in this hospital",
+                    },
+                )
+            return patient.id
+        pr = await self.db.execute(
+            select(PatientProfile)
+            .where(
+                and_(
+                    PatientProfile.hospital_id == self.hospital_id,
+                    PatientProfile.patient_id == s,
+                )
+            )
+            .limit(1)
+        )
+        patient = pr.scalar_one_or_none()
+        if not patient:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "code": "PATIENT_NOT_FOUND",
+                    "message": f"Patient not found in this hospital: {s}",
+                },
+            )
+        return patient.id
     
     async def _verify_hospital_admin_access(self, user: User) -> None:
         """Verify user has Hospital Admin access for this hospital"""

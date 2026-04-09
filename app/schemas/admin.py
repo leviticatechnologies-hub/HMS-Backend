@@ -312,7 +312,8 @@ class BedStatusUpdate(BaseModel):
         None, description="Notes when moving to MAINTENANCE"
     )
     patient_id: Optional[str] = Field(
-        None, description="Patient profile UUID when marking bed as OCCUPIED"
+        None,
+        description="When status is OCCUPIED: patient_profiles.id (UUID) or hospital patient ref (e.g. PAT-001)",
     )
 
 
