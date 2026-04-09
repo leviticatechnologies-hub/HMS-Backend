@@ -10,15 +10,18 @@ BUSINESS RULES:
 - Receptionists CANNOT: Access medical records, Prescribe medicines, Modify lab results
 """
 from typing import Optional
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db_session
 from app.core.security import get_current_user
 from app.models.user import User
-from app.services.clinical_service import ClinicalService
+from app.services.clinical_service import ClinicalService, send_opd_portal_credentials_email_task
 from app.schemas.clinical import (
-    PatientRegistrationCreate, AppointmentSchedulingCreate, AppointmentUpdate,
-    PatientCheckInCreate
+    PatientRegistrationCreate,
+    AppointmentSchedulingCreate,
+    AppointmentUpdate,
+    PatientCheckInCreate,
+    ReceptionistPatientDetailOut,
 )
 from app.core.response_utils import success_response
 
@@ -61,6 +64,7 @@ async def get_receptionist_dashboard(
 @router.post("/patients/register")
 async def register_patient(
     patient_data: PatientRegistrationCreate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session)
 ):
@@ -77,14 +81,27 @@ async def register_patient(
     4. Set hospital association
     
     If `password` is omitted, a one-time `temp_password` is returned (email remains unverified for patient login).
-    If `password` is set, `send_credentials_email` (default true) triggers a best-effort SMTP send **after** the patient is saved.
-    If SMTP fails or is not configured, registration still succeeds; see `credentials_email_sent` and `credentials_email_hint`.
+    If `password` is set and `send_credentials_email` is true, portal credentials are emailed **in the background**
+    (so the API returns quickly; SMTP can take several seconds).
     
     Returns:
-    - Patient ID, optional temp_password, portal_login_enabled, credentials_email_sent, optional hints
+    - Patient ID, optional temp_password, portal_login_enabled, `credentials_email_queued` when email is scheduled
     """
     clinical_service = ClinicalService(db)
     result = await clinical_service.register_opd_patient(patient_data.model_dump(), current_user)
+
+    pwd = (patient_data.password or "").strip() or None
+    email = (str(patient_data.email).strip().lower() if patient_data.email else None)
+    if pwd and email and patient_data.send_credentials_email:
+        background_tasks.add_task(
+            send_opd_portal_credentials_email_task,
+            email,
+            patient_data.first_name,
+            pwd,
+            result.get("hospital_name"),
+        )
+        result["credentials_email_queued"] = True
+
     return success_response(message="Patient registered successfully", data=result)
 
 
@@ -101,8 +118,10 @@ async def schedule_appointment(
     """
     Schedule appointment for an existing patient.
     
-    Register new patients first: POST /receptionist/patients/register, then pass `patient_ref` here
-    with doctor, department, date, and time.
+    Identify the patient with `patient_ref` (from registration) and/or `patient_name` (exact full name
+    as stored: First Last). If only `patient_name` is sent, it must match exactly one registered patient
+    in this hospital; otherwise use `patient_ref` from GET /receptionist/patients/search or
+    GET /receptionist/patients/{patient_ref}/profile.
     
     Access Control:
     - Receptionist (or authenticated user with access to this router)
@@ -280,6 +299,24 @@ async def search_patients(
     
     result = await appointment_service.search_patients(search_params, current_user)
     return success_response(message="Search completed successfully", data=result)
+
+
+@router.get("/patients/{patient_ref}/profile")
+async def get_patient_profile_for_schedule(
+    patient_ref: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Load full patient details for autofill (e.g. Schedule Appointment form after choosing a name).
+
+    Returns the same registration fields as stored for the patient (no password). Use with
+    GET /receptionist/patients/search?name=... to find `patient_ref`, then call this endpoint.
+    """
+    clinical_service = ClinicalService(db)
+    data = await clinical_service.get_receptionist_patient_by_ref(patient_ref, current_user)
+    validated = ReceptionistPatientDetailOut.model_validate(data)
+    return success_response(message="Patient profile loaded successfully", data=validated.model_dump())
 
 
 # ============================================================================

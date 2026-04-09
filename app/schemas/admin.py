@@ -577,21 +577,40 @@ class BedListOut(BaseModel):
     pagination: Dict[str, Any]
 
 
-class BedDetailsOut(BaseModel):
-    """Bed details response"""
+class BedWardSummaryOut(BaseModel):
+    """Ward block returned with bed detail/list responses."""
+
     id: str
-    ward_name: str
+    name: str
+    code: Optional[str] = None
+    ward_type: Optional[str] = None
+    floor: Optional[str] = None
+    building: Optional[str] = None
+
+
+class BedDetailsOut(BaseModel):
+    """Bed details response (matches HospitalAdminService.get_bed_details)."""
+
+    id: str
+    bed_code: str
     bed_number: str
-    bed_type: str
+    ward: BedWardSummaryOut
     status: str
-    equipment: List[str]
-    daily_rate: Optional[float]
-    current_patient: Optional[Dict[str, Any]]
-    last_occupied: Optional[str]
-    maintenance_notes: Optional[str]
-    is_isolation: bool
-    has_oxygen: bool
-    has_monitor: bool
+    bed_type: str
+    floor: Optional[str] = None
+    room_number: Optional[str] = None
+    bed_position: Optional[str] = None
+    equipment: Dict[str, bool]
+    current_patient: Optional[Dict[str, Any]] = None
+    occupied_since: Optional[str] = None
+    last_cleaned: Optional[str] = None
+    daily_rate: Optional[float] = None
+    maintenance_notes: Optional[str] = None
+    notes: Optional[str] = None
+    settings: Dict[str, Any] = Field(default_factory=dict)
+    is_active: bool
+    created_at: str
+    updated_at: str
 
 
 class PatientListOut(BaseModel):

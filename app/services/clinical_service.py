@@ -22,6 +22,65 @@ from app.core.security import SecurityManager
 logger = logging.getLogger(__name__)
 
 
+def _normalize_opd_gender(g: Optional[str]) -> Optional[str]:
+    if not g:
+        return None
+    x = g.strip().upper()
+    if x in ("MALE", "M", "MAN"):
+        return "MALE"
+    if x in ("FEMALE", "F", "WOMAN"):
+        return "FEMALE"
+    if x in ("OTHER", "O"):
+        return "OTHER"
+    if x in ("MALE", "FEMALE", "OTHER"):
+        return x
+    return "OTHER"
+
+
+def _normalize_opd_blood_group(bg: Optional[str]) -> Optional[str]:
+    if not bg:
+        return None
+    s = bg.strip().upper()
+    allowed = {"A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-", "OTHER"}
+    return s if s in allowed else s
+
+
+async def send_opd_portal_credentials_email_task(
+    email_norm: str,
+    first_name: str,
+    password_plain: str,
+    hospital_name: Optional[str],
+) -> None:
+    """
+    Background task: send portal login email after receptionist registration.
+    Keeps HTTP responses fast (SMTP can take several seconds).
+    """
+    try:
+        from app.services.email_service import EmailService
+
+        es = EmailService()
+        if not es.is_smtp_configured():
+            logger.warning(
+                "Portal credentials not emailed (background): SMTP not configured for %s",
+                email_norm,
+            )
+            return
+        sent = await es.send_patient_portal_credentials_email(
+            to_email=email_norm,
+            first_name=first_name,
+            login_email=email_norm,
+            password_plain=password_plain,
+            hospital_name=hospital_name,
+        )
+        if not sent:
+            logger.warning(
+                "Portal credentials email failed after retries (background) for %s",
+                email_norm,
+            )
+    except Exception:
+        logger.exception("Unexpected error sending portal credentials (background) to %s", email_norm)
+
+
 class ClinicalService:
     """Service for clinical operations (OPD, IPD, Nursing)"""
     
@@ -245,6 +304,14 @@ class ClinicalService:
                 )
             )
         
+        bg_raw = _normalize_opd_blood_group(patient_data.get("blood_group"))
+        bg_val = (patient_data.get("blood_group_value") or "").strip() or None
+        if bg_raw == "OTHER" and not bg_val:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="blood_group_value is required when blood_group is OTHER",
+            )
+
         # Create PatientProfile
         patient_profile = PatientProfile(
             id=uuid.uuid4(),
@@ -252,12 +319,22 @@ class ClinicalService:
             user_id=user.id,
             patient_id=patient_ref,
             date_of_birth=patient_data.get("date_of_birth"),
-            gender=patient_data.get("gender"),
+            gender=_normalize_opd_gender(patient_data.get("gender")),
+            blood_group=bg_raw,
+            blood_group_value=bg_val if bg_raw == "OTHER" else None,
+            id_type=(patient_data.get("id_type") or "").strip() or None,
+            id_number=(patient_data.get("id_number") or "").strip() or None,
+            id_name=(patient_data.get("id_name") or "").strip() or None,
             address=patient_data.get("address"),
             city=patient_data.get("city"),
+            district=(patient_data.get("district") or "").strip() or None,
+            state=(patient_data.get("state") or "").strip() or None,
+            country=(patient_data.get("country") or "").strip() or None,
+            pincode=(patient_data.get("pincode") or "").strip() or None,
+            medical_history=(patient_data.get("medical_history") or "").strip() or None,
             emergency_contact_name=patient_data.get("emergency_contact_name"),
             emergency_contact_phone=patient_data.get("emergency_contact_phone"),
-            emergency_contact_relation=patient_data.get("emergency_contact_relation")
+            emergency_contact_relation=patient_data.get("emergency_contact_relation"),
         )
         
         self.db.add(patient_profile)
@@ -301,50 +378,159 @@ class ClinicalService:
         send_credentials = patient_data.get("send_credentials_email", True)
         if portal_password and email_norm:
             result["credentials_email_sent"] = False
+            result["credentials_email_queued"] = False
             result["send_credentials_email_requested"] = bool(send_credentials)
             if not send_credentials:
                 result["credentials_email_hint"] = (
                     "Email send skipped (send_credentials_email=false). Share login email and password with the patient manually."
                 )
             else:
-                try:
-                    from app.services.email_service import EmailService
-
-                    es = EmailService()
-                    if not es.is_smtp_configured():
-                        result["credentials_email_hint"] = (
-                            "SMTP not configured on server (SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM). "
-                            "Patient account is saved; share portal credentials manually or set env vars on Render."
-                        )
-                        logger.warning(
-                            "Portal credentials not emailed: SMTP not configured for %s",
-                            email_norm,
-                        )
-                    else:
-                        sent = await es.send_patient_portal_credentials_email(
-                            to_email=email_norm,
-                            first_name=patient_data["first_name"],
-                            login_email=email_norm,
-                            password_plain=portal_password,
-                            hospital_name=hospital_name,
-                        )
-                        result["credentials_email_sent"] = bool(sent)
-                        if not sent:
-                            result["credentials_email_hint"] = (
-                                "Email send failed after retries. Patient is registered; share login details manually "
-                                "or check Render logs / SendGrid firewall / SMTP_PORT."
-                            )
-                            logger.warning(
-                                "Portal credentials email failed (SMTP configured) for %s",
-                                email_norm,
-                            )
-                except Exception as exc:
-                    result["credentials_email_hint"] = (
-                        f"Email error ({type(exc).__name__}). Patient is registered; share credentials manually."
-                    )
-                    logger.exception("Unexpected error sending portal credentials to %s", email_norm)
+                result["credentials_email_hint"] = (
+                    "Credentials email is queued to send in the background after this response. "
+                    "If SMTP is not configured, check server logs for warnings."
+                )
 
         return result
+
+    def _receptionist_patient_detail_dict(self, patient: PatientProfile) -> Dict[str, Any]:
+        """Serialize patient + user for receptionist schedule / lookup (excludes password)."""
+        u = patient.user
+        return {
+            "patient_ref": patient.patient_id,
+            "first_name": u.first_name,
+            "last_name": u.last_name,
+            "patient_name": f"{u.first_name} {u.last_name}",
+            "gender": patient.gender,
+            "date_of_birth": patient.date_of_birth,
+            "phone": u.phone,
+            "email": u.email,
+            "id_type": patient.id_type,
+            "id_number": patient.id_number,
+            "id_name": patient.id_name,
+            "address": patient.address,
+            "pincode": patient.pincode,
+            "city": patient.city,
+            "district": patient.district,
+            "state": patient.state,
+            "country": patient.country,
+            "emergency_contact_name": patient.emergency_contact_name,
+            "emergency_contact_relationship": patient.emergency_contact_relation,
+            "emergency_contact": patient.emergency_contact_phone,
+            "medical_history": patient.medical_history,
+            "blood_group": patient.blood_group,
+            "blood_group_value": patient.blood_group_value,
+        }
+
+    async def get_receptionist_patient_by_ref(self, patient_ref: str, current_user: User) -> Dict[str, Any]:
+        """Return full OPD profile for autofill (receptionist)."""
+        user_context = self.get_user_context(current_user)
+        await self.get_receptionist_profile(user_context)
+        if not user_context.get("hospital_id"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Hospital ID is required. Receptionist must be associated with a hospital.",
+            )
+        hospital_id_uuid = uuid.UUID(user_context["hospital_id"])
+        pr = (patient_ref or "").strip()
+        result = await self.db.execute(
+            select(PatientProfile)
+            .where(
+                and_(
+                    PatientProfile.patient_id == pr,
+                    PatientProfile.hospital_id == hospital_id_uuid,
+                )
+            )
+            .options(selectinload(PatientProfile.user))
+        )
+        patient = result.scalar_one_or_none()
+        if not patient:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Patient '{pr}' not found for this hospital.",
+            )
+        return self._receptionist_patient_detail_dict(patient)
+
+    async def _resolve_patient_for_scheduling(
+        self,
+        patient_ref: Optional[str],
+        patient_name: Optional[str],
+        hospital_id_uuid: uuid.UUID,
+    ) -> PatientProfile:
+        ref = (patient_ref or "").strip()
+        name = (patient_name or "").strip()
+
+        if ref:
+            patient_result = await self.db.execute(
+                select(PatientProfile)
+                .where(
+                    and_(
+                        PatientProfile.patient_id == ref,
+                        PatientProfile.hospital_id == hospital_id_uuid,
+                    )
+                )
+                .options(selectinload(PatientProfile.user))
+            )
+            patient = patient_result.scalar_one_or_none()
+            if not patient:
+                patient_result = await self.db.execute(
+                    select(PatientProfile)
+                    .where(PatientProfile.patient_id == ref)
+                    .options(selectinload(PatientProfile.user))
+                )
+                patient = patient_result.scalar_one_or_none()
+                if patient and patient.hospital_id is None:
+                    patient.hospital_id = hospital_id_uuid
+                    if patient.user and patient.user.hospital_id is None:
+                        patient.user.hospital_id = hospital_id_uuid
+            if not patient:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Patient '{ref}' not found. Register via POST /receptionist/patients/register first.",
+                )
+            return patient
+
+        norm = " ".join(name.split()).lower()
+        full = func.lower(
+            func.trim(
+                func.concat(
+                    func.coalesce(User.first_name, ""),
+                    " ",
+                    func.coalesce(User.last_name, ""),
+                )
+            )
+        )
+        patient_result = await self.db.execute(
+            select(PatientProfile)
+            .join(User, PatientProfile.user_id == User.id)
+            .where(
+                and_(
+                    PatientProfile.hospital_id == hospital_id_uuid,
+                    full == norm,
+                )
+            )
+            .options(selectinload(PatientProfile.user))
+        )
+        rows = patient_result.scalars().all()
+        if len(rows) == 1:
+            return rows[0]
+        if len(rows) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    f"No patient found with name '{name}' in this hospital. "
+                    "Register first or use patient_ref from search."
+                ),
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "Multiple patients match this name; pass patient_ref to disambiguate.",
+                "matches": [
+                    {"patient_ref": p.patient_id, "patient_name": f"{p.user.first_name} {p.user.last_name}"}
+                    for p in rows
+                ],
+            },
+        )
     
     # ============================================================================
     # OPD APPOINTMENT SCHEDULING
@@ -355,58 +541,21 @@ class ClinicalService:
         user_context = self.get_user_context(current_user)
         receptionist = await self.get_receptionist_profile(user_context)
         
-        # Resolve existing patient (register via /receptionist/patients/register first)
-        patient = None
         hospital_id_uuid = None
         if user_context.get("hospital_id"):
             hospital_id_uuid = uuid.UUID(user_context["hospital_id"]) if isinstance(user_context["hospital_id"], str) else user_context["hospital_id"]
-        
-        # Patient must already exist (OPD registration endpoint)
-        patient_ref = (appointment_data.get("patient_ref") or "").strip()
-        if not patient_ref:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="patient_ref is required. Register the patient first via POST /receptionist/patients/register.",
-            )
 
-        if hospital_id_uuid:
-            patient_result = await self.db.execute(
-                select(PatientProfile)
-                .where(
-                    and_(
-                        PatientProfile.patient_id == patient_ref,
-                        PatientProfile.hospital_id == hospital_id_uuid,
-                    )
-                )
-                .options(selectinload(PatientProfile.user))
-            )
-            patient = patient_result.scalar_one_or_none()
-
-        if not patient:
-            patient_result = await self.db.execute(
-                select(PatientProfile)
-                .where(PatientProfile.patient_id == patient_ref)
-                .options(selectinload(PatientProfile.user))
-            )
-            patient = patient_result.scalar_one_or_none()
-
-            if patient and patient.hospital_id is None and hospital_id_uuid:
-                patient.hospital_id = hospital_id_uuid
-                if patient.user and patient.user.hospital_id is None:
-                    patient.user.hospital_id = hospital_id_uuid
-
-        if not patient:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Patient '{patient_ref}' not found. Register via POST /receptionist/patients/register first.",
-            )
-        
-        # Ensure hospital_id is available for appointment creation
         if not hospital_id_uuid:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Hospital ID is required. Receptionist must be associated with a hospital."
             )
+
+        patient = await self._resolve_patient_for_scheduling(
+            appointment_data.get("patient_ref"),
+            appointment_data.get("patient_name"),
+            hospital_id_uuid,
+        )
         
         # Get doctor and department
         doctor = await self.get_doctor_by_name(appointment_data["doctor_name"], user_context.get("hospital_id"))
@@ -465,7 +614,7 @@ class ClinicalService:
             appointment_date=appointment_data["appointment_date"],
             appointment_time=appointment_data["appointment_time"],
             appointment_type=appointment_data["appointment_type"],
-            chief_complaint=appointment_data["chief_complaint"],
+            chief_complaint=appointment_data.get("chief_complaint"),
             notes=appointment_data.get("notes"),
             status=AppointmentStatus.CONFIRMED,  # Receptionist can directly confirm
             created_by_role=UserRole.RECEPTIONIST,

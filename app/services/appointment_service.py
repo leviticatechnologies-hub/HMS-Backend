@@ -369,9 +369,23 @@ class AppointmentService:
         if search_params.get("email"):
             query = query.where(User.email.ilike(f"%{search_params['email']}%"))
         if search_params.get("name"):
-            name = f"%{search_params['name']}%"
+            raw = search_params["name"].strip()
+            term = f"%{raw}%"
+            full_name = func.lower(
+                func.trim(
+                    func.concat(
+                        func.coalesce(User.first_name, ""),
+                        " ",
+                        func.coalesce(User.last_name, ""),
+                    )
+                )
+            )
             query = query.where(
-                or_(User.first_name.ilike(name), User.last_name.ilike(name))
+                or_(
+                    User.first_name.ilike(term),
+                    User.last_name.ilike(term),
+                    full_name.ilike(f"%{raw.lower()}%"),
+                )
             )
         if search_params.get("patient_id"):
             query = query.where(PatientProfile.patient_id.ilike(f"%{search_params['patient_id']}%"))
@@ -386,8 +400,24 @@ class AppointmentService:
         if search_params.get("email"):
             count_query = count_query.where(User.email.ilike(f"%{search_params['email']}%"))
         if search_params.get("name"):
-            name = f"%{search_params['name']}%"
-            count_query = count_query.where(or_(User.first_name.ilike(name), User.last_name.ilike(name)))
+            raw = search_params["name"].strip()
+            term = f"%{raw}%"
+            full_name = func.lower(
+                func.trim(
+                    func.concat(
+                        func.coalesce(User.first_name, ""),
+                        " ",
+                        func.coalesce(User.last_name, ""),
+                    )
+                )
+            )
+            count_query = count_query.where(
+                or_(
+                    User.first_name.ilike(term),
+                    User.last_name.ilike(term),
+                    full_name.ilike(f"%{raw.lower()}%"),
+                )
+            )
         if search_params.get("patient_id"):
             count_query = count_query.where(PatientProfile.patient_id.ilike(f"%{search_params['patient_id']}%"))
         if search_params.get("mrn"):
@@ -401,10 +431,15 @@ class AppointmentService:
                 {
                     "id": str(p.id),
                     "patient_id": p.patient_id,
+                    "patient_ref": p.patient_id,
                     "mrn": p.mrn,
                     "name": f"{p.user.first_name} {p.user.last_name}",
+                    "first_name": p.user.first_name,
+                    "last_name": p.user.last_name,
                     "email": p.user.email,
                     "phone": p.user.phone,
+                    "gender": p.gender,
+                    "date_of_birth": p.date_of_birth,
                 }
                 for p in patients
             ],

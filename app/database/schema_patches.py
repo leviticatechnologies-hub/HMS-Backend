@@ -52,3 +52,72 @@ def ensure_hospitals_tenant_database_name_column(sync_dsn: str) -> None:
             )
     finally:
         eng.dispose()
+
+
+def ensure_patient_profiles_opd_schema(sync_dsn: str) -> None:
+    """
+    Ensure patient_profiles has OPD registration columns and a hospital+patient_id index.
+
+    Mirrors alembic `patient_profile_opd_fields_001` for deploys where migrations lag or
+    DB_BOOTSTRAP_FROM_MODELS left older column sets.
+    """
+    dsn = (sync_dsn or "").strip()
+    if not dsn:
+        logger.warning("ensure_patient_profiles_opd_schema: empty DSN, skipping")
+        return
+
+    eng = create_engine(dsn)
+    try:
+        insp = inspect(eng)
+        if not insp.has_table("patient_profiles"):
+            logger.debug("patient_profiles missing; skipping OPD schema patch")
+            return
+
+        col_names = {c["name"] for c in insp.get_columns("patient_profiles")}
+        alters: list[str] = []
+        if "id_type" not in col_names:
+            alters.append("ALTER TABLE patient_profiles ADD COLUMN id_type VARCHAR(50)")
+        if "id_number" not in col_names:
+            alters.append("ALTER TABLE patient_profiles ADD COLUMN id_number VARCHAR(100)")
+        if "id_name" not in col_names:
+            alters.append("ALTER TABLE patient_profiles ADD COLUMN id_name VARCHAR(255)")
+        if "district" not in col_names:
+            alters.append("ALTER TABLE patient_profiles ADD COLUMN district VARCHAR(100)")
+        if "medical_history" not in col_names:
+            alters.append("ALTER TABLE patient_profiles ADD COLUMN medical_history TEXT")
+        if "blood_group_value" not in col_names:
+            alters.append("ALTER TABLE patient_profiles ADD COLUMN blood_group_value VARCHAR(50)")
+
+        with eng.begin() as conn:
+            for stmt in alters:
+                logger.info("Applying patch: %s", stmt[:80])
+                conn.execute(text(stmt))
+
+            row = conn.execute(
+                text(
+                    """
+                    SELECT character_maximum_length
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'patient_profiles'
+                      AND column_name = 'blood_group'
+                    """
+                )
+            ).fetchone()
+            if row and row[0] is not None and row[0] < 20:
+                logger.info("Applying patch: widen patient_profiles.blood_group to VARCHAR(20)")
+                conn.execute(
+                    text(
+                        "ALTER TABLE patient_profiles "
+                        "ALTER COLUMN blood_group TYPE VARCHAR(20)"
+                    )
+                )
+
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_patient_profiles_hospital_patient_id "
+                    "ON patient_profiles (hospital_id, patient_id)"
+                )
+            )
+    finally:
+        eng.dispose()

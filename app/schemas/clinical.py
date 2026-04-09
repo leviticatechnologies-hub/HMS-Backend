@@ -10,18 +10,43 @@ from pydantic import BaseModel, Field, EmailStr, field_validator, model_validato
 # ============================================================================
 
 class PatientRegistrationCreate(BaseModel):
-    """Register new patient for OPD"""
+    """Register new patient for OPD (receptionist). Insurance fields are not collected here."""
     first_name: str
     last_name: str
     phone: str
     email: Optional[EmailStr] = None
     date_of_birth: str  # YYYY-MM-DD
-    gender: str  # MALE, FEMALE, OTHER
+    gender: str  # MALE, FEMALE, OTHER (or Male / Female / Other — normalized server-side)
     address: Optional[str] = None
+    pincode: Optional[str] = None
     city: Optional[str] = None
+    district: Optional[str] = None
+    state: Optional[str] = None
+    country: Optional[str] = None
+    id_type: Optional[str] = Field(
+        default=None,
+        description="e.g. Aadhaar Card, Passport, Other",
+    )
+    id_number: Optional[str] = Field(default=None, description="ID document number when applicable")
+    id_name: Optional[str] = Field(
+        default=None,
+        description="Name or label on ID when id_type is Other",
+    )
     emergency_contact_name: Optional[str] = None
     emergency_contact_phone: Optional[str] = None
     emergency_contact_relation: Optional[str] = None
+    medical_history: Optional[str] = Field(
+        default=None,
+        description="Known conditions, allergies, medications (free text)",
+    )
+    blood_group: Optional[str] = Field(
+        default=None,
+        description="A+, A-, B+, B-, AB+, AB-, O+, O-, OTHER",
+    )
+    blood_group_value: Optional[str] = Field(
+        default=None,
+        description="Required when blood_group is OTHER — specify the group",
+    )
     password: Optional[str] = Field(
         default=None,
         min_length=8,
@@ -45,6 +70,13 @@ class PatientRegistrationCreate(BaseModel):
             raise ValueError("email is required when password is set so the patient can use patient login")
         return self
 
+    @model_validator(mode="after")
+    def blood_group_other_value(self):
+        bg = (self.blood_group or "").strip().upper()
+        if bg == "OTHER" and not (self.blood_group_value or "").strip():
+            raise ValueError("blood_group_value is required when blood_group is OTHER")
+        return self
+
     send_credentials_email: bool = Field(
         default=True,
         description=(
@@ -55,8 +87,16 @@ class PatientRegistrationCreate(BaseModel):
 
 
 class AppointmentSchedulingCreate(BaseModel):
-    """Schedule appointment for an existing patient (register via POST /receptionist/patients/register first)."""
-    patient_ref: str = Field(..., min_length=1, description="Patient MRN / PAT-... from registration")
+    """Schedule appointment for an existing patient. Provide patient_ref and/or patient_name."""
+
+    patient_ref: Optional[str] = Field(
+        default=None,
+        description="Patient ID from registration (e.g. PAT-...). Omit if patient_name uniquely resolves.",
+    )
+    patient_name: Optional[str] = Field(
+        default=None,
+        description="Full name as registered (e.g. 'Jane Doe'). Used to resolve patient when patient_ref is omitted.",
+    )
     doctor_name: str  # "Dr. John Smith"
     department_name: str  # "Cardiology"
     appointment_date: str  # YYYY-MM-DD
@@ -64,6 +104,42 @@ class AppointmentSchedulingCreate(BaseModel):
     appointment_type: str = "CONSULTATION"  # CONSULTATION, FOLLOW_UP, EMERGENCY
     chief_complaint: Optional[str] = None
     notes: Optional[str] = None
+
+    @model_validator(mode="after")
+    def require_patient_identifier(self):
+        ref = (self.patient_ref or "").strip()
+        name = (self.patient_name or "").strip()
+        if not ref and not name:
+            raise ValueError("Either patient_ref or patient_name is required")
+        return self
+
+
+class ReceptionistPatientDetailOut(BaseModel):
+    """Full OPD patient profile for receptionist UI (no password). Matches registration fields."""
+
+    patient_ref: str
+    first_name: str
+    last_name: str
+    patient_name: str
+    gender: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    phone: str
+    email: Optional[str] = None
+    id_type: Optional[str] = None
+    id_number: Optional[str] = None
+    id_name: Optional[str] = None
+    address: Optional[str] = None
+    pincode: Optional[str] = None
+    city: Optional[str] = None
+    district: Optional[str] = None
+    state: Optional[str] = None
+    country: Optional[str] = None
+    emergency_contact_name: Optional[str] = None
+    emergency_contact_relationship: Optional[str] = None
+    emergency_contact: Optional[str] = None
+    medical_history: Optional[str] = None
+    blood_group: Optional[str] = None
+    blood_group_value: Optional[str] = None
 
 
 class AppointmentUpdate(BaseModel):

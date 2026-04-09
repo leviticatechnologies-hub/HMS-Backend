@@ -26,11 +26,18 @@ class PatientProfile(TenantBaseModel):
     # Personal details
     date_of_birth = Column(String(10), nullable=True)  # YYYY-MM-DD (optional during registration)
     gender = Column(String(10), nullable=True)  # Maps to Gender enum (optional during registration)
-    blood_group = Column(String(5))  # Maps to BloodGroup enum
+    blood_group = Column(String(20))  # A+, B-, OTHER, etc.; use blood_group_value when OTHER
+    blood_group_value = Column(String(50))  # Free text when blood_group is OTHER
+
+    # Government / facility ID (OPD registration)
+    id_type = Column(String(50))  # e.g. Aadhaar Card, Passport, Other
+    id_number = Column(String(100))
+    id_name = Column(String(255))  # Label or name on ID when type is Other
     
     # Contact details
     address = Column(Text)
     city = Column(String(100))
+    district = Column(String(100))
     state = Column(String(100))
     country = Column(String(100))
     pincode = Column(String(10))
@@ -40,7 +47,9 @@ class PatientProfile(TenantBaseModel):
     emergency_contact_phone = Column(String(20))
     emergency_contact_relation = Column(String(50))
     
-    # Medical information
+    # Medical information (OPD free-text; structured lists below)
+    medical_history = Column(Text)  # Known conditions, allergies, medications narrative
+
     allergies = Column(JSON_TYPE, nullable=False, default=lambda: [])  # ["penicillin", "peanuts"]
     chronic_conditions = Column(JSON_TYPE, nullable=False, default=lambda: [])  # ["diabetes", "hypertension"]
     current_medications = Column(JSON_TYPE, nullable=False, default=lambda: [])

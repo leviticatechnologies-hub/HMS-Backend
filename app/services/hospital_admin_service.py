@@ -2183,15 +2183,16 @@ class HospitalAdminService:
         )
         
         self.db.add(ward)
-        await self.db.commit()
-        
-        return {
+        await self.db.flush()
+        out = {
             "ward_id": str(ward.id),
             "name": ward.name,
             "code": ward.code,
             "ward_type": ward.ward_type,
-            "message": "Ward created successfully"
+            "message": "Ward created successfully",
         }
+        await self.db.commit()
+        return out
     
     async def get_wards(
         self, 
@@ -2357,13 +2358,14 @@ class HospitalAdminService:
                 setattr(ward, field, value)
         
         ward.updated_at = datetime.utcnow()
+        ward_id_str = str(ward.id)
         await self.db.commit()
-        
+
         return {
-            "ward_id": str(ward.id),
-            "message": "Ward updated successfully"
+            "ward_id": ward_id_str,
+            "message": "Ward updated successfully",
         }
-    
+
     async def update_ward_status(self, ward_id: uuid.UUID, is_active: bool) -> Dict[str, Any]:
         """Enable or disable ward"""
         from app.models.hospital import Ward
@@ -2389,16 +2391,17 @@ class HospitalAdminService:
         old_status = ward.is_active
         ward.is_active = is_active
         ward.updated_at = datetime.utcnow()
-        
+
+        ward_id_str = str(ward.id)
         await self.db.commit()
-        
+
         status_text = "enabled" if is_active else "disabled"
-        
+
         return {
-            "ward_id": str(ward.id),
+            "ward_id": ward_id_str,
             "old_status": old_status,
             "new_status": is_active,
-            "message": f"Ward {status_text} successfully"
+            "message": f"Ward {status_text} successfully",
         }
     
     async def create_bed(self, bed_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -2481,18 +2484,21 @@ class HospitalAdminService:
             settings=bed_data.get('settings', {})
         )
         
+        ward_name_str = ward.name
+        ward_id_str = str(ward.id)
         self.db.add(bed)
-        await self.db.commit()
-        
-        return {
+        await self.db.flush()
+        out = {
             "bed_id": str(bed.id),
             "bed_code": bed.bed_code,
             "bed_number": bed.bed_number,
-            "ward_name": ward.name,
-            "ward_id": str(ward.id),
+            "ward_name": ward_name_str,
+            "ward_id": ward_id_str,
             "status": bed.status,
-            "message": "Bed created successfully"
+            "message": "Bed created successfully",
         }
+        await self.db.commit()
+        return out
     
     async def get_beds(
         self, 
@@ -2637,9 +2643,9 @@ class HospitalAdminService:
                 "id": str(bed.current_patient.id),
                 "patient_id": bed.current_patient.patient_id,
                 "name": f"{bed.current_patient.user.first_name} {bed.current_patient.user.last_name}",
-                "age": bed.current_patient.age,
+                "date_of_birth": bed.current_patient.date_of_birth,
                 "gender": bed.current_patient.gender,
-                "phone": bed.current_patient.user.phone
+                "phone": bed.current_patient.user.phone,
             }
         
         return {
@@ -2665,7 +2671,7 @@ class HospitalAdminService:
             "daily_rate": float(bed.daily_rate) if bed.daily_rate else None,
             "maintenance_notes": bed.maintenance_notes,
             "notes": bed.notes,
-            "settings": bed.settings,
+            "settings": bed.settings if isinstance(bed.settings, dict) else {},
             "is_active": bed.is_active,
             "created_at": bed.created_at.isoformat(),
             "updated_at": bed.updated_at.isoformat()
@@ -2743,17 +2749,19 @@ class HospitalAdminService:
         # Update bed status
         bed.status = new_status
         bed.updated_at = datetime.utcnow()
-        
+
+        bed_id_str = str(bed.id)
+        bed_code_str = bed.bed_code
         await self.db.commit()
-        
+
         return {
-            "bed_id": str(bed.id),
-            "bed_code": bed.bed_code,
+            "bed_id": bed_id_str,
+            "bed_code": bed_code_str,
             "old_status": old_status,
             "new_status": new_status,
             "patient_id": patient_id,
             "maintenance_notes": maintenance_notes,
-            "message": f"Bed status updated from {old_status} to {new_status}"
+            "message": f"Bed status updated from {old_status} to {new_status}",
         }
 
     # ============================================================================
