@@ -7,7 +7,7 @@ import uuid
 import aiofiles
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func
 from sqlalchemy.orm.attributes import flag_modified
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
@@ -267,10 +267,12 @@ async def update_super_admin_me(
 
     if "email" in payload and payload["email"] is not None:
         new_email = str(payload["email"]).strip()
-        if new_email != (current_user.email or ""):
+        current_email_norm = (current_user.email or "").strip().lower()
+        new_email_norm = new_email.lower()
+        if new_email_norm != current_email_norm:
             dup = await db.execute(
                 select(User.id).where(
-                    and_(User.email == new_email, User.id != current_user.id)
+                    and_(func.lower(User.email) == new_email_norm, User.id != current_user.id)
                 )
             )
             if dup.scalar_one_or_none():
@@ -278,7 +280,7 @@ async def update_super_admin_me(
                     status_code=status.HTTP_409_CONFLICT,
                     detail={"code": "EMAIL_IN_USE", "message": "This email is already registered"},
                 )
-            current_user.email = new_email
+            current_user.email = new_email_norm
 
     if "first_name" in payload:
         current_user.first_name = payload["first_name"] or ""
