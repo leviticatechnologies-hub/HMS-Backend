@@ -123,6 +123,17 @@ def ensure_patient_profiles_opd_schema(sync_dsn: str) -> None:
         eng.dispose()
 
 
+def ensure_core_schema_drift_fixes_for_database(sync_dsn: str) -> None:
+    """
+    Apply all idempotent column patches for a single Postgres database (platform or tenant).
+
+    Order: patient_profiles (OPD) first, then doctor_profiles (consultation fields).
+    Safe to call on every process startup and lazily on first connection.
+    """
+    ensure_patient_profiles_opd_schema(sync_dsn)
+    ensure_doctor_profiles_consultation_schema(sync_dsn)
+
+
 def ensure_doctor_profiles_consultation_schema(sync_dsn: str) -> None:
     """
     Ensure doctor_profiles has consultation_type + availability_time.

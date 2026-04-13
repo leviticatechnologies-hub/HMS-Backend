@@ -7,6 +7,7 @@ Authentication always loads User from the platform database (see get_platform_db
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -36,6 +37,26 @@ _tenant_lock = threading.Lock()
 
 _hospital_tenant_cache: Dict[str, Tuple[Optional[str], float]] = {}
 _CACHE_TTL_SEC = 60.0
+
+# Startup patches in main.py target DATABASE_URL_SYNC only. Tenant DBs (and workers that skip
+# setup due to the advisory lock) need the same idempotent DDL applied lazily per DSN.
+_schema_drift_applied: set[str] = set()
+_schema_drift_lock = threading.Lock()
+
+
+async def _ensure_schema_drift_for_sync_dsn(sync_dsn: str) -> None:
+    """Run patient + doctor column patches once per process per database URL (idempotent)."""
+    dsn = (sync_dsn or "").strip()
+    if not dsn:
+        return
+    with _schema_drift_lock:
+        if dsn in _schema_drift_applied:
+            return
+    from app.database.schema_patches import ensure_core_schema_drift_fixes_for_database
+
+    await asyncio.to_thread(ensure_core_schema_drift_fixes_for_database, dsn)
+    with _schema_drift_lock:
+        _schema_drift_applied.add(dsn)
 
 
 def get_async_engine() -> AsyncEngine:
@@ -139,6 +160,7 @@ def _use_platform_for_path(path: str) -> bool:
 
 async def get_platform_db_session() -> AsyncGenerator[AsyncSession, None]:
     """Platform DB session (users, hospitals registry, subscriptions)."""
+    await _ensure_schema_drift_for_sync_dsn(settings.DATABASE_URL_SYNC)
     async with AsyncSessionLocal() as session:
         try:
             yield session
@@ -153,6 +175,8 @@ async def get_db_session(request: Request) -> AsyncGenerator[AsyncSession, None]
     """
     Primary FastAPI dependency: platform or tenant DB based on request path + hospital context.
     """
+    await _ensure_schema_drift_for_sync_dsn(settings.DATABASE_URL_SYNC)
+
     if not settings.TENANT_DB_ROUTE_QUERIES:
         async with AsyncSessionLocal() as session:
             try:
@@ -205,6 +229,9 @@ async def get_db_session(request: Request) -> AsyncGenerator[AsyncSession, None]
                 await session.close()
         return
 
+    from app.services.tenant_database_provisioning import sync_url_for_tenant_database
+
+    await _ensure_schema_drift_for_sync_dsn(sync_url_for_tenant_database(db_name))
     fac = get_tenant_session_factory(db_name)
     async with fac() as session:
         try:

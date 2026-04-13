@@ -209,14 +209,12 @@ def ensure_tenant_schema(db_name: str) -> None:
     finally:
         eng.dispose()
     from app.database.schema_patches import (
-        ensure_doctor_profiles_consultation_schema,
+        ensure_core_schema_drift_fixes_for_database,
         ensure_hospitals_tenant_database_name_column,
-        ensure_patient_profiles_opd_schema,
     )
 
     ensure_hospitals_tenant_database_name_column(url)
-    ensure_patient_profiles_opd_schema(url)
-    ensure_doctor_profiles_consultation_schema(url)
+    ensure_core_schema_drift_fixes_for_database(url)
 
 
 def copy_hospital_registry_row_to_tenant(db_name: str, hospital: Any) -> None:

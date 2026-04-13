@@ -516,19 +516,15 @@ async def setup_database_once() -> bool:
 
             # create_all + older images skip new columns; alembic subprocess may use wrong DSN without DATABASE_URL_SYNC
             from app.database.schema_patches import (
-                ensure_doctor_profiles_consultation_schema,
+                ensure_core_schema_drift_fixes_for_database,
                 ensure_hospitals_tenant_database_name_column,
-                ensure_patient_profiles_opd_schema,
             )
 
             await asyncio.to_thread(
                 ensure_hospitals_tenant_database_name_column, settings.DATABASE_URL_SYNC
             )
             await asyncio.to_thread(
-                ensure_patient_profiles_opd_schema, settings.DATABASE_URL_SYNC
-            )
-            await asyncio.to_thread(
-                ensure_doctor_profiles_consultation_schema, settings.DATABASE_URL_SYNC
+                ensure_core_schema_drift_fixes_for_database, settings.DATABASE_URL_SYNC
             )
 
             # Step 2.5: Optionally prune legacy tables (dev/local only)
