@@ -123,8 +123,8 @@ class Settings(BaseSettings):
             return [item.strip() for item in raw.split(",") if item.strip()]
         return v
 
-    # Public URL of this backend
-    APP_PUBLIC_URL: str = Field(default="http://localhost:8060", env="APP_PUBLIC_URL")
+    # Public URL of this backend (used for absolute /uploads/... links in JSON; set to your API origin)
+    APP_PUBLIC_URL: str = Field(default="http://localhost:8000", env="APP_PUBLIC_URL")
     
     # Email Configuration - SendGrid
     SENDGRID_API_KEY: str = Field(default="", env="SENDGRID_API_KEY")

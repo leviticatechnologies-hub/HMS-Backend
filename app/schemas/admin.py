@@ -295,13 +295,35 @@ class StaffCreate(BaseModel):
         max_length=2000,
         description="For DOCTOR only: human-readable availability (e.g. Mon-Fri 09:00-17:00)",
     )
+    # --- RECEPTIONIST only (ignored for other roles; does not change doctor/nurse/lab/pharmacy create) ---
+    receptionist_work_area: Optional[str] = Field(
+        None,
+        max_length=100,
+        description="For RECEPTIONIST only: e.g. OPD, EMERGENCY",
+    )
+    receptionist_experience_years: Optional[int] = Field(
+        None,
+        ge=0,
+        le=60,
+        description="For RECEPTIONIST only: years of experience",
+    )
+    receptionist_designation: Optional[str] = Field(
+        None,
+        max_length=100,
+        description="For RECEPTIONIST only: job title",
+    )
+    gender: Optional[str] = Field(None, max_length=30, description="For RECEPTIONIST only")
+    blood_group: Optional[str] = Field(None, max_length=20, description="For RECEPTIONIST only")
+    receptionist_profile_photo_url: Optional[str] = Field(
+        None,
+        max_length=500,
+        description="For RECEPTIONIST only: public URL for profile photo (same as avatar)",
+    )
 
     @model_validator(mode="after")
     def _doctor_only_professional_fields(self):
         role = (self.role or "").strip().upper()
         if role != "DOCTOR":
-            if self.department_name and str(self.department_name).strip():
-                raise ValueError("department_name is only allowed when role is DOCTOR")
             if self.doctor_experience_years is not None:
                 raise ValueError("doctor_experience_years is only allowed when role is DOCTOR")
             if self.consultation_fee is not None:
@@ -310,6 +332,23 @@ class StaffCreate(BaseModel):
                 raise ValueError("consultation_type is only allowed when role is DOCTOR")
             if self.availability_time and str(self.availability_time).strip():
                 raise ValueError("availability_time is only allowed when role is DOCTOR")
+        if role not in ("DOCTOR", "NURSE", "RECEPTIONIST"):
+            if self.department_name and str(self.department_name).strip():
+                raise ValueError(
+                    "department_name is only allowed when role is DOCTOR, NURSE, or RECEPTIONIST"
+                )
+        recv_any = (
+            self.receptionist_work_area is not None
+            or self.receptionist_experience_years is not None
+            or (self.receptionist_designation is not None and str(self.receptionist_designation).strip())
+            or (self.gender is not None and str(self.gender).strip())
+            or (self.blood_group is not None and str(self.blood_group).strip())
+            or (self.receptionist_profile_photo_url is not None and str(self.receptionist_profile_photo_url).strip())
+        )
+        if recv_any and role != "RECEPTIONIST":
+            raise ValueError(
+                "receptionist_* / gender / blood_group / receptionist_profile_photo_url are only for RECEPTIONIST"
+            )
         return self
 
     @field_validator("emergency_contact", "joining_date", "address", "shift_timing", mode="before")

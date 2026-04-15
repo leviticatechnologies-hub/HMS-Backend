@@ -10,11 +10,19 @@ BUSINESS RULES:
 - Receptionists CANNOT: Access medical records, Prescribe medicines, Modify lab results
 """
 from typing import Optional
-from fastapi import APIRouter, BackgroundTasks, Depends, Query
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.api.deps import require_receptionist
 from app.core.database import get_db_session
 from app.core.security import get_current_user
+from app.core.utils import absolute_public_asset_url
+from app.models.hospital import Department
 from app.models.user import User
+from app.schemas.receptionist import ReceptionistProfileSelfUpdate
 from app.services.clinical_service import ClinicalService, send_opd_portal_credentials_email_task
 from app.schemas.clinical import (
     PatientRegistrationCreate,
@@ -26,6 +34,49 @@ from app.schemas.clinical import (
 from app.core.response_utils import success_response
 
 router = APIRouter(prefix="/receptionist", tags=["Receptionist - OPD Management"])
+
+
+async def _receptionist_user_for_write(db: AsyncSession, current_user: User) -> User:
+    """Load authenticated user in this session for updates."""
+    row = await db.get(User, current_user.id)
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "USER_NOT_FOUND", "message": "User not found"},
+        )
+    return row
+
+
+def _receptionist_metadata_fields(current_user: User) -> dict:
+    """Extra profile fields stored on user_metadata at create (receptionist-specific)."""
+    md = current_user.user_metadata or {}
+    av = absolute_public_asset_url(current_user.avatar_url)
+    return {
+        "mobile_number": current_user.phone or "",
+        "joining_date": md.get("joining_date"),
+        "blood_group": md.get("blood_group"),
+        "gender": md.get("gender"),
+        "shift_timing": md.get("shift_timing"),
+        "address": md.get("address"),
+        "profile_photo": av,
+    }
+
+
+def _receptionist_profile_base_dict(current_user: User) -> dict:
+    """Common user-level fields for profile responses."""
+    return {
+        "user_id": str(current_user.id),
+        "first_name": current_user.first_name or "",
+        "last_name": current_user.last_name or "",
+        "full_name": f"{current_user.first_name or ''} {current_user.last_name or ''}".strip(),
+        "email": current_user.email or "",
+        "phone": current_user.phone or "",
+        "staff_id": current_user.staff_id,
+        "avatar_url": absolute_public_asset_url(current_user.avatar_url),
+        "status": getattr(current_user, "status", None),
+        "is_active": (getattr(current_user, "status", None) or "").upper() == "ACTIVE",
+        **_receptionist_metadata_fields(current_user),
+    }
 
 
 # ============================================================================
@@ -406,8 +457,8 @@ async def get_quick_actions(
 
 @router.get("/profile")
 async def get_receptionist_profile(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session)
+    current_user: User = Depends(require_receptionist()),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """
     Get receptionist profile information.
@@ -422,47 +473,197 @@ async def get_receptionist_profile(
     - Work schedule
     - Performance metrics
     """
-    from sqlalchemy import select
     from app.models.receptionist import ReceptionistProfile
-    
-    # Get receptionist profile
+
     result = await db.execute(
         select(ReceptionistProfile)
+        .options(selectinload(ReceptionistProfile.department))
         .where(ReceptionistProfile.user_id == current_user.id)
     )
-    
+
     receptionist = result.scalar_one_or_none()
-    
+
+    base = _receptionist_profile_base_dict(current_user)
+    base["role"] = "RECEPTIONIST"
+
     if not receptionist:
+        base["note"] = "Profile not yet created"
         return success_response(
             message="Receptionist profile not found",
-            data={
-                "user_id": str(current_user.id),
-                "name": f"{current_user.first_name} {current_user.last_name}",
-                "email": current_user.email,
-                "role": "RECEPTIONIST",
-                "note": "Profile not yet created"
-            }
+            data=base,
         )
-    
+
+    dept = getattr(receptionist, "department", None)
     profile_data = {
+        **base,
         "receptionist_id": receptionist.receptionist_id,
         "employee_id": receptionist.employee_id,
-        "name": f"{current_user.first_name} {current_user.last_name}",
-        "email": current_user.email,
         "designation": receptionist.designation,
         "work_area": receptionist.work_area,
         "department_id": str(receptionist.department_id),
+        "department_name": dept.name if dept else None,
         "experience_years": receptionist.experience_years,
+        "shift": receptionist.shift_type,
         "shift_type": receptionist.shift_type,
         "employment_type": receptionist.employment_type,
         "permissions": {
             "can_schedule_appointments": receptionist.can_schedule_appointments,
             "can_modify_appointments": receptionist.can_modify_appointments,
             "can_register_patients": receptionist.can_register_patients,
-            "can_collect_payments": receptionist.can_collect_payments
+            "can_collect_payments": receptionist.can_collect_payments,
         },
-        "is_active": receptionist.is_active
+        "profile_is_active": receptionist.is_active,
     }
-    
+
     return success_response(message="Profile retrieved successfully", data=profile_data)
+
+
+@router.patch("/profile")
+async def update_receptionist_profile(
+    body: ReceptionistProfileSelfUpdate,
+    current_user: User = Depends(require_receptionist()),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Update receptionist-visible profile fields (name, email, phone, employee id, shift, work area, etc.).
+    """
+    from app.models.receptionist import ReceptionistProfile
+
+    user = await _receptionist_user_for_write(db, current_user)
+    payload = body.model_dump(exclude_unset=True)
+
+    res = await db.execute(
+        select(ReceptionistProfile).where(ReceptionistProfile.user_id == user.id)
+    )
+    receptionist = res.scalar_one_or_none()
+    if not receptionist:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "RECEPTIONIST_PROFILE_MISSING",
+                "message": "Receptionist profile not found; contact hospital admin.",
+            },
+        )
+
+    if "email" in payload and payload["email"] is not None:
+        new_email = str(payload["email"]).strip().lower()
+        cur = (user.email or "").strip().lower()
+        if new_email != cur:
+            dup = await db.execute(
+                select(User.id).where(
+                    and_(func.lower(User.email) == new_email, User.id != user.id)
+                )
+            )
+            if dup.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "EMAIL_IN_USE",
+                        "message": "This email is already registered",
+                    },
+                )
+            user.email = new_email
+
+    if "first_name" in payload:
+        user.first_name = (payload["first_name"] or "").strip() or ""
+    if "last_name" in payload:
+        user.last_name = (payload["last_name"] or "").strip() or ""
+    if "phone" in payload:
+        new_phone = (payload["phone"] or "").strip() if payload["phone"] is not None else ""
+        cur_p = (user.phone or "").strip()
+        if new_phone != cur_p and new_phone:
+            dup_p = await db.execute(
+                select(User.id).where(
+                    and_(User.phone == new_phone, User.id != user.id)
+                )
+            )
+            if dup_p.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "PHONE_IN_USE",
+                        "message": "This phone number is already registered",
+                    },
+                )
+        user.phone = new_phone
+
+    if "avatar_url" in payload and payload["avatar_url"] is not None:
+        user.avatar_url = str(payload["avatar_url"]).strip() or None
+
+    md_updates = {}
+    for key in ("gender", "blood_group", "address", "shift_timing", "joining_date"):
+        if key in payload and payload[key] is not None:
+            md_updates[key] = str(payload[key]).strip()
+    if md_updates:
+        umd = dict(user.user_metadata or {})
+        umd.update(md_updates)
+        user.user_metadata = umd
+
+    if "employee_id" in payload and payload["employee_id"] is not None:
+        eid = str(payload["employee_id"]).strip()
+        dup_e = await db.execute(
+            select(ReceptionistProfile.id).where(
+                and_(
+                    ReceptionistProfile.hospital_id == receptionist.hospital_id,
+                    ReceptionistProfile.employee_id == eid,
+                    ReceptionistProfile.user_id != user.id,
+                )
+            )
+        )
+        if dup_e.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "EMPLOYEE_ID_IN_USE",
+                    "message": "This employee ID is already in use",
+                },
+            )
+        receptionist.employee_id = eid
+
+    if "work_area" in payload:
+        receptionist.work_area = payload["work_area"]
+    if "shift_type" in payload:
+        receptionist.shift_type = (payload["shift_type"] or "").strip().upper() or receptionist.shift_type
+    if "employment_type" in payload:
+        receptionist.employment_type = (
+            (payload["employment_type"] or "").strip().upper() or receptionist.employment_type
+        )
+    if "experience_years" in payload and payload["experience_years"] is not None:
+        receptionist.experience_years = int(payload["experience_years"])
+    if "designation" in payload:
+        receptionist.designation = (payload["designation"] or "").strip() or receptionist.designation
+
+    await db.commit()
+    await db.refresh(user)
+    await db.refresh(receptionist)
+
+    dept = None
+    if receptionist.department_id:
+        dr = await db.execute(
+            select(Department).where(Department.id == receptionist.department_id)
+        )
+        dept = dr.scalar_one_or_none()
+
+    data = {
+        **_receptionist_profile_base_dict(user),
+        "role": "RECEPTIONIST",
+        "receptionist_id": receptionist.receptionist_id,
+        "employee_id": receptionist.employee_id,
+        "designation": receptionist.designation,
+        "work_area": receptionist.work_area,
+        "department_id": str(receptionist.department_id),
+        "department_name": dept.name if dept else None,
+        "experience_years": receptionist.experience_years,
+        "shift": receptionist.shift_type,
+        "shift_type": receptionist.shift_type,
+        "employment_type": receptionist.employment_type,
+        "permissions": {
+            "can_schedule_appointments": receptionist.can_schedule_appointments,
+            "can_modify_appointments": receptionist.can_modify_appointments,
+            "can_register_patients": receptionist.can_register_patients,
+            "can_collect_payments": receptionist.can_collect_payments,
+        },
+        "profile_is_active": receptionist.is_active,
+    }
+
+    return success_response(message="Profile updated successfully", data=data)

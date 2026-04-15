@@ -402,3 +402,27 @@ def resolve_user_id(user_id: Optional[Union[str, int]]) -> Optional[str]:
     if user_id is None:
         return None
     return str(user_id)
+
+
+def absolute_public_asset_url(path: Optional[str]) -> Optional[str]:
+    """
+    Turn stored relative paths like `/uploads/...` into absolute URLs using `settings.APP_PUBLIC_URL`.
+
+    SPAs (e.g. Vite on :3000) request `<img src="/uploads/...">` on the wrong origin and get 404.
+    Prefixing with the API public base fixes display while keeping DB values portable.
+    """
+    if path is None:
+        return None
+    s = str(path).strip()
+    if not s:
+        return None
+    if s.startswith(("http://", "https://", "//")):
+        return s
+    from app.core.config import settings
+
+    base = (getattr(settings, "APP_PUBLIC_URL", None) or "").strip().rstrip("/")
+    if not base:
+        return s
+    if not s.startswith("/"):
+        s = "/" + s
+    return f"{base}{s}"

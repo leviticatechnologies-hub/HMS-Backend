@@ -28,7 +28,7 @@ from app.schemas.admin import (
     SuperAdminPasswordChange,
 )
 from app.schemas.response import SuccessResponse
-from app.core.utils import parse_date_string
+from app.core.utils import parse_date_string, absolute_public_asset_url
 
 router = APIRouter(prefix="/super-admin")
 # Legacy frontend paths used `super_admin` + snake_case segments; keep aliases mounted separately.
@@ -129,7 +129,7 @@ def build_super_admin_me(user: User) -> SuperAdminMeOut:
         full_name=full or fn or ln,
         email=user.email or "",
         phone_number=user.phone if user.phone is not None else "",
-        profile_picture_url=user.avatar_url,
+        profile_picture_url=absolute_public_asset_url(user.avatar_url),
         middle_name=user.middle_name,
         timezone=user.timezone,
         language=user.language,
@@ -196,7 +196,7 @@ async def get_super_admin_profile(
         last_name=current_user.last_name,
         phone=current_user.phone,
         middle_name=current_user.middle_name,
-        avatar_url=current_user.avatar_url,
+        avatar_url=absolute_public_asset_url(current_user.avatar_url),
         timezone=current_user.timezone,
         language=current_user.language,
     )
@@ -220,7 +220,7 @@ async def update_super_admin_profile(
         last_name=current_user.last_name,
         phone=current_user.phone,
         middle_name=current_user.middle_name,
-        avatar_url=current_user.avatar_url,
+        avatar_url=absolute_public_asset_url(current_user.avatar_url),
         timezone=current_user.timezone,
         language=current_user.language,
     )

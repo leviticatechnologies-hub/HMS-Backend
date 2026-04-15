@@ -616,8 +616,8 @@ class HospitalAdminService:
 
         department_for_create = None
         dept_label = "GENERAL"
-        if role_name == UserRole.DOCTOR and (staff_data.get("department_name") or "").strip():
-            dn = (staff_data.get("department_name") or "").strip()
+        dn = (staff_data.get("department_name") or "").strip()
+        if role_name == UserRole.DOCTOR and dn:
             department_for_create = await self._get_department_by_name(dn)
             if not department_for_create:
                 raise HTTPException(
@@ -628,8 +628,36 @@ class HospitalAdminService:
                     },
                 )
             dept_label = department_for_create.name
+        elif role_name in (UserRole.NURSE, UserRole.RECEPTIONIST):
+            if dn:
+                department_for_create = await self._get_department_by_name(dn)
+                if not department_for_create:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail={
+                            "code": "DEPARTMENT_NOT_FOUND",
+                            "message": f"Department '{dn}' not found in this hospital",
+                        },
+                    )
+                dept_label = department_for_create.name
+            else:
+                department_for_create = await self._get_first_department()
+                if department_for_create:
+                    dept_label = department_for_create.name
 
         department = department_for_create
+
+        if role_name in (UserRole.NURSE, UserRole.RECEPTIONIST) and not department_for_create:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "NO_DEPARTMENT",
+                    "message": (
+                        "No department found in this hospital. Create a department first, "
+                        "or pass department_name when adding a nurse or receptionist."
+                    ),
+                },
+            )
 
         joining_iso = _parse_joining_date_iso(staff_data.get("joining_date"))
         shift_type = _shift_type_from_timing(staff_data.get("shift_timing"))
@@ -642,6 +670,25 @@ class HospitalAdminService:
             extra_md["joining_date"] = joining_iso
         if staff_data.get("address"):
             extra_md["address"] = staff_data["address"].strip()
+
+        if role_name == UserRole.RECEPTIONIST:
+            g = (staff_data.get("gender") or "").strip()
+            if g:
+                extra_md["gender"] = g
+            bg = (staff_data.get("blood_group") or "").strip()
+            if bg:
+                extra_md["blood_group"] = bg
+            rw_meta = (staff_data.get("receptionist_work_area") or "OPD").strip()
+            extra_md["receptionist_work_area"] = rw_meta
+            rey_meta = 0
+            if staff_data.get("receptionist_experience_years") is not None:
+                try:
+                    rey_meta = max(0, int(staff_data["receptionist_experience_years"]))
+                except (TypeError, ValueError):
+                    rey_meta = 0
+            extra_md["receptionist_experience_years"] = rey_meta
+            rdn = (staff_data.get("receptionist_designation") or "Front Desk Receptionist").strip()
+            extra_md["receptionist_designation"] = rdn
 
         spec = (
             (staff_data.get("doctor_specialization") or "").strip()
@@ -671,6 +718,10 @@ class HospitalAdminService:
                 extra_md["availability_time"] = av
 
         password_hash = self.security.hash_password(staff_data["password"])
+        recv_profile_photo = None
+        if role_name == UserRole.RECEPTIONIST:
+            recv_profile_photo = (staff_data.get("receptionist_profile_photo_url") or "").strip() or None
+
         staff_id = generate_staff_id(
             role=role_name,
             department_name=dept_label,
@@ -701,6 +752,7 @@ class HospitalAdminService:
             status=UserStatus.ACTIVE,
             email_verified=False,
             phone_verified=False,
+            avatar_url=recv_profile_photo,
             user_metadata=extra_md,
         )
         self.db.add(user)
@@ -847,6 +899,12 @@ class HospitalAdminService:
             if not has_rc.scalar_one_or_none():
                 rid = user.staff_id or f"RC{str(uuid.uuid4())[:8].upper()}"
                 eid = f"EMP-{uuid.uuid4().hex[:12].upper()}"
+                rw_area = (extra_md.get("receptionist_work_area") or "OPD").strip()
+                try:
+                    rey_i = max(0, int(extra_md.get("receptionist_experience_years", 0) or 0))
+                except (TypeError, ValueError):
+                    rey_i = 0
+                rdes = (extra_md.get("receptionist_designation") or "Front Desk Receptionist").strip()
                 self.db.add(
                     ReceptionistProfile(
                         id=uuid.uuid4(),
@@ -855,11 +913,16 @@ class HospitalAdminService:
                         department_id=department.id,
                         receptionist_id=rid,
                         employee_id=eid,
-                        designation="Front Desk Receptionist",
+                        designation=rdes,
+                        work_area=rw_area,
+                        experience_years=rey_i,
                         shift_type=shift_type,
                     )
                 )
                 profiles_created.append("receptionist_profile")
+                extra_md["department_id"] = str(department.id)
+                extra_md["department_name"] = department.name
+                user.user_metadata = extra_md
 
         resp_user_id = str(user.id)
         resp_staff_id = user.staff_id
@@ -892,6 +955,19 @@ class HospitalAdminService:
                 "consultation_type": extra_md.get("consultation_type"),
                 "availability_time": extra_md.get("availability_time"),
                 "specialization": spec,
+            }
+        elif role_name == UserRole.RECEPTIONIST:
+            out["receptionist_details"] = {
+                "department_name": extra_md.get("department_name"),
+                "department_id": extra_md.get("department_id"),
+                "work_area": extra_md.get("receptionist_work_area"),
+                "experience_years": extra_md.get("receptionist_experience_years"),
+                "designation": extra_md.get("receptionist_designation"),
+                "gender": extra_md.get("gender"),
+                "blood_group": extra_md.get("blood_group"),
+                "shift_timing": extra_md.get("shift_timing"),
+                "address": extra_md.get("address"),
+                "profile_photo_url": recv_profile_photo,
             }
         return out
     
@@ -5046,6 +5122,12 @@ class HospitalAdminService:
             if not existing_rc.scalar_one_or_none():
                 rid = staff_member.staff_id or f"RC{str(uuid.uuid4())[:8].upper()}"
                 eid = f"EMP-{uuid.uuid4().hex[:12].upper()}"
+                rw_a = (md.get("receptionist_work_area") or "OPD").strip()
+                try:
+                    rey_a = max(0, int(md.get("receptionist_experience_years", 0) or 0))
+                except (TypeError, ValueError):
+                    rey_a = 0
+                rdes_a = (md.get("receptionist_designation") or "Front Desk Receptionist").strip()
                 self.db.add(
                     ReceptionistProfile(
                         id=uuid.uuid4(),
@@ -5054,7 +5136,9 @@ class HospitalAdminService:
                         department_id=department.id,
                         receptionist_id=rid,
                         employee_id=eid,
-                        designation="Front Desk Receptionist",
+                        designation=rdes_a,
+                        work_area=rw_a,
+                        experience_years=rey_a,
                         shift_type=shift_type,
                     )
                 )
@@ -5271,6 +5355,17 @@ class HospitalAdminService:
         result = await self.db.execute(query)
         return result.scalar_one_or_none()
     
+    async def _get_first_department(self) -> Optional[Department]:
+        """First department in this hospital (for nurse/receptionist when department_name omitted)."""
+        query = (
+            select(Department)
+            .where(Department.hospital_id == self.hospital_id)
+            .order_by(Department.name.asc())
+            .limit(1)
+        )
+        result = await self.db.execute(query)
+        return result.scalar_one_or_none()
+
     async def _get_department_by_name(self, department_name: str) -> Optional[Department]:
         """Get department by name within this hospital"""
         query = select(Department).where(
