@@ -31,6 +31,8 @@ from app.schemas.response import SuccessResponse
 from app.core.utils import parse_date_string
 
 router = APIRouter(prefix="/super-admin")
+# Legacy frontend paths used `super_admin` + snake_case segments; keep aliases mounted separately.
+router_super_admin_compat = APIRouter(prefix="/super_admin", tags=["Super Admin - Profile Settings (compat)"])
 
 _SUPER_ADMIN_SECURITY_META_KEY = "super_admin_security"
 
@@ -322,13 +324,13 @@ async def update_super_admin_me(
     )
 
 
-@router.post("/me/change-password", tags=["Super Admin - Profile Settings"])
-async def super_admin_change_password(
+async def _super_admin_change_password_impl(
     body: SuperAdminPasswordChange,
-    current_user: User = Depends(require_super_admin()),
-    db: AsyncSession = Depends(get_db_session),
-):
-    """Change Super Admin password (current + new + confirm). Uses same rules as other roles."""
+    current_user: User,
+    db: AsyncSession,
+) -> SuccessResponse:
+    """Shared handler: session-bound user + auth service."""
+    current_user = await _bind_super_admin_user_to_db(db, current_user)
     auth_service = AuthService(db)
     await auth_service.change_password(
         current_user.id,
@@ -340,6 +342,28 @@ async def super_admin_change_password(
         message="Password changed successfully",
         data={"status": "success"},
     )
+
+
+@router.post("/me/change-password", tags=["Super Admin - Profile Settings"])
+@router.post("/me/change_password", tags=["Super Admin - Profile Settings"], include_in_schema=False)
+async def super_admin_change_password(
+    body: SuperAdminPasswordChange,
+    current_user: User = Depends(require_super_admin()),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Change Super Admin password (current + new + confirm). Uses same rules as other roles."""
+    return await _super_admin_change_password_impl(body, current_user, db)
+
+
+@router_super_admin_compat.post("/me/change-password", include_in_schema=False)
+@router_super_admin_compat.post("/me/change_password", include_in_schema=False)
+async def super_admin_change_password_legacy_prefix(
+    body: SuperAdminPasswordChange,
+    current_user: User = Depends(require_super_admin()),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Legacy: `POST /api/v1/super_admin/me/change_password` (underscore prefix + segment)."""
+    return await _super_admin_change_password_impl(body, current_user, db)
 
 
 _SUPERADMIN_AVATAR_MAX_BYTES = 5 * 1024 * 1024

@@ -42,8 +42,13 @@ except ImportError as e:
 # 2. SUPER ADMIN (Second - highest privilege level)
 # ============================================================================
 try:
-    from app.api.v1.routers.admin.super_admin import router as super_admin_router
+    from app.api.v1.routers.admin.super_admin import (
+        router as super_admin_router,
+        router_super_admin_compat,
+    )
+
     api_router.include_router(super_admin_router)
+    api_router.include_router(router_super_admin_compat)
     logger.info("✓ Super Admin router loaded")
 except ImportError as e:
     logger.error(f"✗ Failed to load super admin router: {e}")
