@@ -2,7 +2,7 @@
 Lab Test Registration Schemas
 Pydantic models for lab test catalogue, orders, and order items.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
@@ -67,6 +67,15 @@ class CategoryResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("created_at", "updated_at", mode="before")
+    @classmethod
+    def _utc_aware_timestamps(cls, v):
+        if v is None:
+            return v
+        if isinstance(v, datetime) and v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -183,6 +192,15 @@ class TestResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("created_at", "updated_at", mode="before")
+    @classmethod
+    def _test_utc_aware_timestamps(cls, v):
+        if v is None:
+            return v
+        if isinstance(v, datetime) and v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -327,7 +345,35 @@ class OrderResponse(BaseModel):
     updated_at: datetime
     tests: List[OrderItemResponse]
 
+    @field_validator("created_at", "updated_at", mode="before")
+    @classmethod
+    def _order_utc_aware_timestamps(cls, v):
+        if v is None:
+            return v
+        if isinstance(v, datetime) and v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v
+
     model_config = ConfigDict(from_attributes=True)
+
+
+class OrderPriorityUpdateResponse(BaseModel):
+    """Response for PATCH /orders/{id}/priority"""
+    message: str
+    lab_order_id: str
+    lab_order_no: str
+    priority: str
+    reason: Optional[str] = None
+
+
+class OrderCancelResponse(BaseModel):
+    """Response for PATCH /orders/{id}/cancel"""
+    message: str
+    lab_order_id: str
+    lab_order_no: str
+    status: str
+    cancellation_reason: str
+    cancelled_by: Optional[str] = None
 
 
 # Equipment schemas

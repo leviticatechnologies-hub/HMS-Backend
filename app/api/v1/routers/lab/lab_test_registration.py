@@ -20,7 +20,8 @@ from app.schemas.lab import (
     TestCreateResponse, TestUpdateResponse,
     LabOrderCreateRequest, LabOrderResponse, LabOrderCreateResponse, LabOrderListResponse,
     RegisterOrderResponse,
-    PriorityUpdateRequest, CancelOrderRequest, MessageResponse
+    PriorityUpdateRequest, CancelOrderRequest,
+    OrderPriorityUpdateResponse, OrderCancelResponse,
 )
 
 router = APIRouter(prefix="/lab/registration", tags=["Lab - Test Registration"])
@@ -455,7 +456,7 @@ async def get_lab_order(
     return LabOrderResponse(**result)
 
 
-@router.patch("/orders/{order_id}/priority", response_model=MessageResponse)
+@router.patch("/orders/{order_id}/priority", response_model=OrderPriorityUpdateResponse)
 async def update_order_priority(
     order_id: str,
     priority_data: PriorityUpdateRequest,
@@ -495,10 +496,10 @@ async def update_order_priority(
         priority_data.priority, 
         priority_data.reason
     )
-    return MessageResponse(**result)
+    return OrderPriorityUpdateResponse(**result)
 
 
-@router.patch("/orders/{order_id}/cancel", response_model=MessageResponse)
+@router.patch("/orders/{order_id}/cancel", response_model=OrderCancelResponse)
 async def cancel_lab_order(
     order_id: str,
     cancel_data: CancelOrderRequest,
@@ -536,11 +537,11 @@ async def cancel_lab_order(
         )
     
     result = await service.cancel_order(
-        order_uuid, 
-        cancel_data.cancellation_reason,
-        cancel_data.cancelled_by
+        order_uuid,
+        cancel_data.reason,
+        cancel_data.cancelled_by,
     )
-    return MessageResponse(**result)
+    return OrderCancelResponse(**result)
 
 
 # ============================================================================

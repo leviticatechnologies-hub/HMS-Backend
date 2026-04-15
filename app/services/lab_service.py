@@ -51,7 +51,7 @@ def _validate_qc_values(rule: QCRule, values: Optional[Dict[str, Any]]) -> tuple
     if high is not None and val > float(high):
         return (QCStatus.FAIL.value, f"Value {val} above maximum {high}")
     return (QCStatus.PASS.value, None)
-from app.core.utils import generate_sample_number, generate_sample_barcode
+from app.core.utils import generate_sample_number, generate_sample_barcode, ensure_datetime_utc_aware
 
 # Order statuses from which cancellation is not allowed
 _ORDER_CANCEL_FORBIDDEN = {
@@ -152,8 +152,8 @@ class LabService:
             "description": cat.description,
             "display_order": cat.display_order,
             "is_active": cat.is_active,
-            "created_at": cat.created_at,
-            "updated_at": cat.updated_at,
+            "created_at": ensure_datetime_utc_aware(cat.created_at),
+            "updated_at": ensure_datetime_utc_aware(cat.updated_at),
         }
 
     async def list_categories(self, page: int = 1, limit: int = 50, active_only: bool = True) -> Dict[str, Any]:
@@ -172,8 +172,8 @@ class LabService:
                     "description": c.description,
                     "display_order": c.display_order,
                     "is_active": c.is_active,
-                    "created_at": c.created_at,
-                    "updated_at": c.updated_at,
+                    "created_at": ensure_datetime_utc_aware(c.created_at),
+                    "updated_at": ensure_datetime_utc_aware(c.updated_at),
                 }
                 for c in categories
             ],
@@ -217,8 +217,8 @@ class LabService:
             "reference_ranges": test.reference_ranges,
             "status": test.status,
             "is_active": test.is_active,
-            "created_at": test.created_at,
-            "updated_at": test.updated_at,
+            "created_at": ensure_datetime_utc_aware(test.created_at),
+            "updated_at": ensure_datetime_utc_aware(test.updated_at),
         }
 
     async def create_test(self, test_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -554,6 +554,11 @@ class LabService:
             Dictionary with orders and pagination info
         """
         try:
+            if date_from is not None:
+                date_from = ensure_datetime_utc_aware(date_from)
+            if date_to is not None:
+                date_to = ensure_datetime_utc_aware(date_to)
+
             # Build query conditions
             conditions = [LabOrder.hospital_id == self.hospital_id]
             
@@ -565,9 +570,11 @@ class LabService:
             
             if date_from:
                 conditions.append(LabOrder.created_at >= date_from)
-            
+
+            # date_to from API is YYYY-MM-DD parsed as midnight UTC — include the whole calendar day
             if date_to:
-                conditions.append(LabOrder.created_at <= date_to)
+                end_exclusive = date_to + timedelta(days=1)
+                conditions.append(LabOrder.created_at < end_exclusive)
             
             # Get total count
             count_query = select(func.count(LabOrder.id)).where(and_(*conditions))
@@ -622,23 +629,25 @@ class LabService:
                 else:
                     estimated_completion = None
                 
+                pid = order.patient_id or ""
+                doc_ref = order.requested_by_doctor_id
                 order_responses.append({
                     "order_id": order.id,
                     "order_ref": order.lab_order_no,
-                    "patient_id": order.patient_id,
-                    "patient_name": order.patient_id,
+                    "patient_ref": pid,
+                    "patient_name": pid,
                     "source": order.source,
                     "priority": order.priority,
                     "status": order.status,
                     "total_tests": len(tests),
                     "total_amount": total_amount if total_amount > 0 else None,
-                    "requested_by_doctor_id": order.requested_by_doctor_id,
-                    "requested_by_doctor_name": order.requested_by_doctor_id,
+                    "requested_by_doctor_ref": doc_ref,
+                    "requested_by_doctor_name": doc_ref,
                     "notes": order.notes,
                     "special_instructions": order.special_instructions,
-                    "created_at": order.created_at,
-                    "updated_at": order.updated_at,
-                    "tests": tests
+                    "created_at": ensure_datetime_utc_aware(order.created_at),
+                    "updated_at": ensure_datetime_utc_aware(order.updated_at),
+                    "tests": tests,
                 })
             
             return {
@@ -717,23 +726,25 @@ class LabService:
                 if test.price is not None:
                     total_amount += test.price
             
+            pid = order.patient_id or ""
+            doc_ref = order.requested_by_doctor_id
             return {
                 "order_id": order.id,
                 "order_ref": order.lab_order_no,
-                "patient_id": order.patient_id,
-                "patient_name": order.patient_id,
+                "patient_ref": pid,
+                "patient_name": pid,
                 "source": order.source,
                 "priority": order.priority,
                 "status": order.status,
                 "total_tests": len(tests),
                 "total_amount": total_amount if total_amount > 0 else None,
-                "requested_by_doctor_id": order.requested_by_doctor_id,
-                "requested_by_doctor_name": order.requested_by_doctor_id,
+                "requested_by_doctor_ref": doc_ref,
+                "requested_by_doctor_name": doc_ref,
                 "notes": order.notes,
                 "special_instructions": order.special_instructions,
-                "created_at": order.created_at,
-                "updated_at": order.updated_at,
-                "tests": tests
+                "created_at": ensure_datetime_utc_aware(order.created_at),
+                "updated_at": ensure_datetime_utc_aware(order.updated_at),
+                "tests": tests,
             }
             
         except HTTPException:
@@ -910,9 +921,9 @@ class LabService:
                 "message": "Lab order cancelled successfully",
                 "lab_order_id": str(order_id),
                 "lab_order_no": order.lab_order_no,
-                "status": LabOrderStatus.CANCELLED,
+                "status": LabOrderStatus.CANCELLED.value,
                 "cancellation_reason": cancellation_reason,
-                "cancelled_by": cancelled_by
+                "cancelled_by": cancelled_by,
             }
             
         except HTTPException:
@@ -955,7 +966,7 @@ class LabService:
             return {
                 "lab_order_id": str(order_id),
                 "lab_order_no": order.lab_order_no,
-                "status": LabOrderStatus.REGISTERED,
+                "status": LabOrderStatus.REGISTERED.value,
                 "message": "Order is already registered",
             }
         if current_status not in _ORDER_REGISTER_FROM:
@@ -978,7 +989,7 @@ class LabService:
         return {
             "lab_order_id": str(order_id),
             "lab_order_no": order.lab_order_no,
-            "status": LabOrderStatus.REGISTERED,
+            "status": LabOrderStatus.REGISTERED.value,
             "message": "Order registered successfully",
         }
 
@@ -1330,6 +1341,11 @@ class LabService:
             Dictionary with samples and pagination info
         """
         try:
+            if date_from is not None:
+                date_from = ensure_datetime_utc_aware(date_from)
+            if date_to is not None:
+                date_to = ensure_datetime_utc_aware(date_to)
+
             # Build query conditions
             conditions = [Sample.hospital_id == self.hospital_id]
             
@@ -4017,6 +4033,11 @@ class LabService:
             Dictionary with logs and pagination info
         """
         try:
+            if date_from is not None:
+                date_from = ensure_datetime_utc_aware(date_from)
+            if date_to is not None:
+                date_to = ensure_datetime_utc_aware(date_to)
+
             # Build query conditions
             conditions = []
             
@@ -4402,6 +4423,11 @@ class LabService:
             Dictionary with runs and pagination info
         """
         try:
+            if date_from is not None:
+                date_from = ensure_datetime_utc_aware(date_from)
+            if date_to is not None:
+                date_to = ensure_datetime_utc_aware(date_to)
+
             # Build query conditions
             conditions = [QCRun.hospital_id == self.hospital_id]
             

@@ -3,8 +3,21 @@ Utility functions for common operations across the application.
 """
 import secrets
 import string
-from datetime import datetime, time
+from datetime import datetime, time, timezone
 from typing import Optional, Union
+
+
+def ensure_datetime_utc_aware(dt: Optional[datetime]) -> Optional[datetime]:
+    """
+    Normalize a datetime for API output and SQL binds against timestamptz columns.
+    PostgreSQL/asyncpg often return timezone-aware values; naive Python datetimes (e.g. from
+    strptime) mixed with those can raise: TypeError: can't compare offset-naive and offset-aware datetimes.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def generate_barcode_png_bytes(barcode_value: str) -> Optional[bytes]:
