@@ -1,7 +1,7 @@
 # app/services/email_service.py
 
 """
-Email service using SendGrid SMTP - Render-optimized
+Email service via SMTP (Brevo by default; host/port from env).
 """
 import aiosmtplib
 import asyncio
@@ -19,9 +19,10 @@ logger = logging.getLogger(__name__)
 
 
 class EmailService:
-    """Service for sending emails via SendGrid SMTP"""
-    
-    SENDGRID_PORTS = [2525, 587, 465]
+    """Service for sending emails via SMTP (e.g. Brevo smtp-relay.brevo.com)."""
+
+    # Brevo: 587 STARTTLS, 465 SSL; 2525 as last resort on restrictive networks
+    SMTP_FALLBACK_PORTS = [587, 465, 2525]
     
     def __init__(self):
         self.smtp_host = settings.SMTP_HOST
@@ -94,7 +95,7 @@ class EmailService:
         text_content: Optional[str] = None,
         timeout: int = 15
     ) -> bool:
-        """Send email using SendGrid SMTP"""
+        """Send email using configured SMTP."""
         try:
             logger.info(f"📧 Sending to {to_email}: {subject}")
             
@@ -118,7 +119,7 @@ class EmailService:
             
             # Try fallback ports
             logger.warning(f"⚠️  Port {self.smtp_port} failed, trying alternatives...")
-            for alt_port in self.SENDGRID_PORTS:
+            for alt_port in self.SMTP_FALLBACK_PORTS:
                 if alt_port == self.smtp_port:
                     continue
                 success, _ = await self._try_send_with_port(message, alt_port, timeout)
@@ -134,7 +135,7 @@ class EmailService:
             return False
 
     def is_smtp_configured(self) -> bool:
-        """True when env has SMTP credentials (SendGrid or other provider)."""
+        """True when env has SMTP credentials (e.g. Brevo SMTP key)."""
         return bool((self.smtp_user or "").strip() and (self.smtp_pass or "").strip())
 
     async def send_email_with_retry(

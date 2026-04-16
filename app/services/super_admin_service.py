@@ -2,6 +2,7 @@
 Super Admin service for platform-level administrative operations.
 Handles hospital management, subscription control, analytics, and compliance monitoring.
 """
+import logging
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
@@ -18,6 +19,8 @@ from app.models.tenant import Hospital, SubscriptionPlanModel, HospitalSubscript
 from app.core.enums import UserRole, UserStatus, SubscriptionStatus, SubscriptionPlan, AuditAction, HospitalStatus
 from app.core.security import SecurityManager
 from app.core.utils import parse_date_string
+
+logger = logging.getLogger(__name__)
 
 
 def generate_staff_id(role: str, department_name: str, first_name: str, last_name: str) -> str:
@@ -190,7 +193,7 @@ class SuperAdminService:
         admin_count_query = select(func.count(User.id)).where(
             and_(
                 User.hospital_id == hospital_id,
-                User.roles.any(Role.name == UserRole.HOSPITAL_ADMIN)
+                User.roles.any(Role.name == UserRole.HOSPITAL_ADMIN.value),
             )
         )
         admin_count_result = await self.db.execute(admin_count_query)
@@ -369,7 +372,7 @@ class SuperAdminService:
         ).where(
             and_(
                 User.hospital_id == hospital_id,
-                User.roles.any(Role.name == UserRole.HOSPITAL_ADMIN)
+                User.roles.any(Role.name == UserRole.HOSPITAL_ADMIN.value),
             )
         ).order_by(User.created_at.desc())
         
@@ -1591,9 +1594,11 @@ class SuperAdminService:
         }
 
     async def notify_hospital_admins(self, hospital_id: Optional[uuid.UUID], subject: str, message: str, created_by_user_id: Optional[uuid.UUID] = None) -> Dict[str, Any]:
-        """Send notification to hospital admins. If hospital_id is None, send to all hospital admins."""
+        """Send notification to hospital admins. If hospital_id is None, send to all hospital admins (platform-wide)."""
         from app.services.notifications import NotificationService
-        query = select(User).options(selectinload(User.roles)).where(User.roles.any(Role.name == UserRole.HOSPITAL_ADMIN))
+        query = select(User).options(selectinload(User.roles)).where(
+            User.roles.any(Role.name == UserRole.HOSPITAL_ADMIN.value),
+        )
         if hospital_id:
             query = query.where(User.hospital_id == hospital_id)
         r = await self.db.execute(query)
@@ -1612,7 +1617,14 @@ class SuperAdminService:
                 key = f"super_admin_notify:{hid}:{admin.id}:{datetime.utcnow().isoformat()}"
                 await svc.send(channel="EMAIL", to=admin.email, idempotency_key=key, event_type="ADMIN_NOTIFICATION", raw_message=message, subject=subject, created_by_user_id=created_by_user_id)
                 sent += 1
-            except Exception:
-                pass
+            except Exception as e:
+                logger.exception("notify_hospital_admins: enqueue failed for admin %s: %s", admin.id, e)
         await self.db.commit()
-        return {"sent": sent, "total_admins": len(admins), "message": f"Queued {sent} notification(s)"}
+        out: Dict[str, Any] = {
+            "sent": sent,
+            "total_admins": len(admins),
+            "message": f"Queued {sent} notification(s)",
+        }
+        if hospital_id:
+            out["hospital_id"] = str(hospital_id)
+        return out

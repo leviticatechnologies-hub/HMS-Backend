@@ -37,7 +37,7 @@ async def contact_health_check():
     """Check if contact service is properly configured"""
     checks = {
         "status": "operational",
-        "email_provider": "SendGrid SMTP",
+        "email_provider": "Brevo SMTP",
         "smtp_configured": bool(settings.SMTP_USER and settings.SMTP_PASS),
         "smtp_host": settings.SMTP_HOST,
         "smtp_user": settings.SMTP_USER,

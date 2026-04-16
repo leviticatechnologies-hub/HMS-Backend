@@ -24,12 +24,12 @@ SUPERADMIN_PASSWORD=SuperAdmin123!
 SUPERADMIN_FIRST_NAME=Super
 SUPERADMIN_LAST_NAME=Admin
 
-# Email (SMTP)
-SMTP_HOST=smtp.gmail.com
+# Email (SMTP) — Brevo: https://app.brevo.com → SMTP & API (SMTP_USER = your login email, SMTP_PASS = SMTP key)
+SMTP_HOST=smtp-relay.brevo.com
 SMTP_PORT=587
-SMTP_USER=cheekatiabhinaya@gmail.com
-SMTP_PASS=wpjeppaqlcnyxbod
-EMAIL_FROM=cheekatiabhinaya@gmail.com
+SMTP_USER=
+SMTP_PASS=
+EMAIL_FROM=
 
 # Payment Gateways
 RAZORPAY_KEY_ID=rzp_test_jUuqoNowtoLjk6

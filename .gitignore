@@ -101,6 +101,8 @@ celerybeat.pid
 # Environments
 .env
 .venv
+# Root-level env file (often a template; never commit real secrets)
+/env
 env/
 venv/
 ENV/

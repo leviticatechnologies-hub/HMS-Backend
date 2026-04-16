@@ -1095,30 +1095,108 @@ async def get_audit_logs(
 # ============================================================================
 
 class NotifyHospitalAdminsRequest(BaseModel):
-    hospital_name: Optional[str] = None  # If None, notify all hospital admins
-    subject: str
-    message: str
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "hospital_name": "City General Hospital",
+                    "subject": "Scheduled maintenance",
+                    "message": "The admin portal will be unavailable Saturday 02:00–04:00 UTC.",
+                },
+                {
+                    "hospital_id": "550e8400-e29b-41d4-a716-446655440000",
+                    "subject": "Scheduled maintenance",
+                    "message": "The admin portal will be unavailable Saturday 02:00–04:00 UTC.",
+                },
+            ]
+        }
+    }
+
+    hospital_id: Optional[uuid.UUID] = Field(
+        default=None,
+        description="Target hospital (preferred). Only users with the Hospital Admin role and this hospital_id receive the notification.",
+    )
+    hospital_name: Optional[str] = Field(
+        default=None,
+        description="Name of the target hospital; matched case-insensitively. Alternative to hospital_id.",
+    )
+    notify_all_hospitals: bool = Field(
+        default=False,
+        description="If true, notify every Hospital Admin on the platform. Do not combine with hospital_id or hospital_name.",
+    )
+    subject: str = Field(
+        ...,
+        description="Title of the notification (email subject line).",
+        examples=["Scheduled maintenance"],
+    )
+    message: str = Field(
+        ...,
+        description="Content of the notification (email body).",
+        examples=["The admin portal will be unavailable Saturday 02:00–04:00 UTC."],
+    )
 
 
-@router.post("/notifications/send-to-hospital-admins", tags=["Super Admin - Notifications"])
+@router.post(
+    "/notifications/send-to-hospital-admins",
+    tags=["Super Admin - Notifications"],
+    summary="Send notifications to Hospital Admins of a hospital",
+    response_description="Queued job counts; includes hospital_id when a single hospital was targeted.",
+)
 async def notify_hospital_admins(
     body: NotifyHospitalAdminsRequest,
     current_user: User = Depends(require_super_admin()),
     service: SuperAdminService = Depends(get_super_admin_service),
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Send email notification to hospital admin(s). Optionally filter by hospital_name."""
+    """
+    **Super Admin → Hospital Admin notification (scoped by hospital)**
+
+    Enables the Super Admin to send email notifications to **all Hospital Admin users** belonging to **one**
+    specific hospital (or, if `notify_all_hospitals` is true, to every Hospital Admin on the platform).
+
+    **Inputs**
+
+    - **`hospital_name`** — Name of the target hospital (case-insensitive match). Use if you do not have the UUID.
+    - **`hospital_id`** — Preferred: exact hospital UUID; avoids ambiguity when names are similar.
+    - **`subject`** — Title of the notification.
+    - **`message`** — Content of the notification.
+
+    **Outcome**
+
+    - If the hospital exists (`hospital_id` or `hospital_name`), notifications are **queued** for **each** Hospital
+      Admin linked to that hospital (each with a valid email and `hospital_id`).
+    - If the hospital does **not** exist, **404** is returned with `HOSPITAL_NOT_FOUND`.
+    - If neither hospital targeting nor `notify_all_hospitals` is provided, **400** `HOSPITAL_SCOPE_REQUIRED`.
+
+    Requires a **Super Admin** JWT.
+    """
     from sqlalchemy import select, func
     from app.models.tenant import Hospital
 
-    h_uuid = None
-    if body.hospital_name:
-        name = (body.hospital_name or "").strip()
-        if not name:
+    h_uuid: Optional[uuid.UUID] = None
+    has_name = bool(body.hospital_name and str(body.hospital_name).strip())
+
+    if body.notify_all_hospitals:
+        if body.hospital_id is not None or has_name:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"code": "EMPTY_HOSPITAL_NAME", "message": "hospital_name cannot be empty"},
+                detail={
+                    "code": "CONFLICTING_HOSPITAL_SCOPE",
+                    "message": "Do not set hospital_id or hospital_name when notify_all_hospitals is true.",
+                },
             )
+        h_uuid = None
+    elif body.hospital_id is not None:
+        r = await db.execute(select(Hospital).where(Hospital.id == body.hospital_id).limit(1))
+        hospital = r.scalar_one_or_none()
+        if not hospital:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "HOSPITAL_NOT_FOUND", "message": f"No hospital found with id: {body.hospital_id}"},
+            )
+        h_uuid = hospital.id
+    elif has_name:
+        name = str(body.hospital_name).strip()
         r = await db.execute(select(Hospital).where(func.lower(Hospital.name) == name.lower()).limit(1))
         hospital = r.scalar_one_or_none()
         if hospital:
@@ -1128,6 +1206,14 @@ async def notify_hospital_admins(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"code": "HOSPITAL_NOT_FOUND", "message": f"No hospital found with name: {name}"},
             )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "HOSPITAL_SCOPE_REQUIRED",
+                "message": "Provide hospital_id, hospital_name, or set notify_all_hospitals to true.",
+            },
+        )
 
     result = await service.notify_hospital_admins(h_uuid, body.subject, body.message, current_user.id)
     return result

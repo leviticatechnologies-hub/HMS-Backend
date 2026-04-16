@@ -126,13 +126,13 @@ class Settings(BaseSettings):
     # Public URL of this backend (used for absolute /uploads/... links in JSON; set to your API origin)
     APP_PUBLIC_URL: str = Field(default="http://localhost:8000", env="APP_PUBLIC_URL")
     
-    # Email Configuration - SendGrid
+    # Email — optional SendGrid HTTP API (notifications module); app mail uses SMTP below
     SENDGRID_API_KEY: str = Field(default="", env="SENDGRID_API_KEY")
     EMAIL_FROM: str = Field(default="kiranios456@gmail.com", env="EMAIL_FROM")
     
-    # Legacy SMTP settings (for backward compatibility)
-    SMTP_HOST: str = Field(default="smtp.gmail.com", env="SMTP_HOST")
-    SMTP_PORT: int = Field(default=2525, env="SMTP_PORT")
+    # SMTP (default: Brevo — smtp-relay.brevo.com, port 587 STARTTLS; SMTP_USER + SMTP key from Brevo dashboard)
+    SMTP_HOST: str = Field(default="smtp-relay.brevo.com", env="SMTP_HOST")
+    SMTP_PORT: int = Field(default=587, env="SMTP_PORT")
     SMTP_USER: str = Field(default="", env="SMTP_USER")
     SMTP_PASS: str = Field(default="", env="SMTP_PASS")
     
@@ -274,8 +274,8 @@ class Settings(BaseSettings):
         logger.info(f"  Database Name: {self.DB_NAME}")
         logger.info(f"  Async URL: {masked_url}")
         logger.info(f"  Sync URL: {masked_sync_url}")
-        logger.info(f"  Email Provider: SendGrid")
-        logger.info(f"  SendGrid API Key: {'SET (' + self.SENDGRID_API_KEY[:20] + '...)' if self.SENDGRID_API_KEY else 'NOT SET ⚠️'}")
+        logger.info(f"  SMTP: {self.SMTP_HOST}:{self.SMTP_PORT} (credentials {'SET' if (self.SMTP_USER and self.SMTP_PASS) else 'NOT SET ⚠️'})")
+        logger.info(f"  SendGrid API Key (optional): {'SET (' + self.SENDGRID_API_KEY[:20] + '...)' if self.SENDGRID_API_KEY else 'NOT SET'}")
         logger.info(f"  Email From: {self.EMAIL_FROM}")
         logger.info(f"  Contact Notify: {self.CONTACT_MESSAGE_NOTIFY_EMAIL or 'Using SUPERADMIN_EMAIL'}")
         logger.info("=" * 60)
