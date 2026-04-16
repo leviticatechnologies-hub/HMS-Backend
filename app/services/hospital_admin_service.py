@@ -109,6 +109,34 @@ def _parse_joining_date_iso(raw: Optional[str]) -> Optional[str]:
         return None
 
 
+def _safe_int(val: Any, default: int = 0) -> int:
+    try:
+        if val is None:
+            return default
+        return int(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_decimal(val: Any) -> Decimal:
+    try:
+        if val is None:
+            return Decimal("0")
+        return Decimal(str(val))
+    except Exception:
+        return Decimal("0")
+
+
+# Role.name in DB is VARCHAR; SQLAlchemy must compare to string literals, not Enum instances (avoids DB errors).
+_STAFF_ROLE_VALUES_ORDERED: List[str] = [
+    UserRole.DOCTOR.value,
+    UserRole.NURSE.value,
+    UserRole.RECEPTIONIST.value,
+    UserRole.LAB_TECH.value,
+    UserRole.PHARMACIST.value,
+]
+
+
 class HospitalAdminService:
     """Service class for Hospital Admin operations"""
     
@@ -644,6 +672,17 @@ class HospitalAdminService:
                 department_for_create = await self._get_first_department()
                 if department_for_create:
                     dept_label = department_for_create.name
+        elif role_name in (UserRole.LAB_TECH, UserRole.PHARMACIST) and dn:
+            department_for_create = await self._get_department_by_name(dn)
+            if not department_for_create:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={
+                        "code": "DEPARTMENT_NOT_FOUND",
+                        "message": f"Department '{dn}' not found in this hospital",
+                    },
+                )
+            dept_label = department_for_create.name
 
         department = department_for_create
 
@@ -690,6 +729,39 @@ class HospitalAdminService:
             rdn = (staff_data.get("receptionist_designation") or "Front Desk Receptionist").strip()
             extra_md["receptionist_designation"] = rdn
 
+        if role_name == UserRole.NURSE:
+            nd = (staff_data.get("nurse_designation") or "").strip()
+            if nd:
+                extra_md["nurse_designation"] = nd
+            ns = (staff_data.get("nurse_specialization") or "").strip()
+            if ns:
+                extra_md["nurse_specialization"] = ns
+            if staff_data.get("nurse_experience_years") is not None:
+                extra_md["nurse_experience_years"] = max(
+                    0, _safe_int(staff_data.get("nurse_experience_years"), 0)
+                )
+        if role_name == UserRole.LAB_TECH:
+            for key in ("lab_specialization", "lab_designation"):
+                v = (staff_data.get(key) or "").strip()
+                if v:
+                    extra_md[key] = v
+            if staff_data.get("lab_experience_years") is not None:
+                extra_md["lab_experience_years"] = max(
+                    0, _safe_int(staff_data.get("lab_experience_years"), 0)
+                )
+        if role_name == UserRole.PHARMACIST:
+            for key in ("pharmacist_specialization", "pharmacist_designation"):
+                v = (staff_data.get(key) or "").strip()
+                if v:
+                    extra_md[key] = v
+            if staff_data.get("pharmacist_experience_years") is not None:
+                extra_md["pharmacist_experience_years"] = max(
+                    0, _safe_int(staff_data.get("pharmacist_experience_years"), 0)
+                )
+        if role_name in (UserRole.LAB_TECH, UserRole.PHARMACIST) and department_for_create:
+            extra_md["department_id"] = str(department_for_create.id)
+            extra_md["department_name"] = department_for_create.name
+
         spec = (
             (staff_data.get("doctor_specialization") or "").strip()
             or (staff_data.get("specialization") or "").strip()
@@ -716,6 +788,9 @@ class HospitalAdminService:
             av = (staff_data.get("availability_time") or "").strip()
             if av:
                 extra_md["availability_time"] = av
+            dd = (staff_data.get("designation") or "").strip()
+            if dd:
+                extra_md["designation"] = dd
 
         password_hash = self.security.hash_password(staff_data["password"])
         recv_profile_photo = None
@@ -824,6 +899,9 @@ class HospitalAdminService:
 
                 doc_ref = user.staff_id or f"DOC{str(uuid.uuid4())[:8].upper()}"
                 lic = f"AUTO-ML-{self.hospital_id.hex[:8]}-{uuid.uuid4().hex[:10]}".upper()
+                doc_designation = (
+                    (staff_data.get("designation") or "").strip() or "Staff Physician"
+                )
                 self.db.add(
                     DoctorProfile(
                         id=uuid.uuid4(),
@@ -832,7 +910,7 @@ class HospitalAdminService:
                         department_id=department_for_create.id,
                         doctor_id=doc_ref,
                         medical_license_number=lic,
-                        designation="Staff Physician",
+                        designation=doc_designation,
                         specialization=spec,
                         sub_specialization=None,
                         experience_years=exp_years,
@@ -871,6 +949,9 @@ class HospitalAdminService:
             if not has_nurse.scalar_one_or_none():
                 nid = user.staff_id or f"NUR{str(uuid.uuid4())[:8].upper()}"
                 nlic = f"AUTO-NL-{uuid.uuid4().hex[:12]}".upper()
+                n_des = (extra_md.get("nurse_designation") or "Staff Nurse").strip()
+                n_spec = (extra_md.get("nurse_specialization") or "").strip() or None
+                ney_i = max(0, _safe_int(extra_md.get("nurse_experience_years"), 0))
                 self.db.add(
                     NurseProfile(
                         id=uuid.uuid4(),
@@ -879,9 +960,9 @@ class HospitalAdminService:
                         department_id=department.id,
                         nurse_id=nid,
                         nursing_license_number=nlic,
-                        designation="Staff Nurse",
-                        specialization=None,
-                        experience_years=0,
+                        designation=n_des,
+                        specialization=n_spec,
+                        experience_years=ney_i,
                         shift_type=shift_type,
                     )
                 )
@@ -983,14 +1064,6 @@ class HospitalAdminService:
         
         offset = (page - 1) * limit
 
-        staff_role_names = [
-            UserRole.DOCTOR,
-            UserRole.NURSE,
-            UserRole.RECEPTIONIST,
-            UserRole.LAB_TECH,
-            UserRole.PHARMACIST,
-        ]
-
         # Build query with hospital filter
         query = select(User).options(
             selectinload(User.roles)
@@ -1000,7 +1073,7 @@ class HospitalAdminService:
         if role_filter:
             query = query.join(User.roles).where(Role.name == role_filter)
         else:
-            query = query.join(User.roles).where(Role.name.in_(staff_role_names))
+            query = query.join(User.roles).where(Role.name.in_(_STAFF_ROLE_VALUES_ORDERED))
         
         if active_only:
             query = query.where(User.is_active == True)
@@ -1010,7 +1083,7 @@ class HospitalAdminService:
         if role_filter:
             count_query = count_query.join(User.roles).where(Role.name == role_filter)
         else:
-            count_query = count_query.join(User.roles).where(Role.name.in_(staff_role_names))
+            count_query = count_query.join(User.roles).where(Role.name.in_(_STAFF_ROLE_VALUES_ORDERED))
         if active_only:
             count_query = count_query.where(User.is_active == True)
         
@@ -1027,13 +1100,13 @@ class HospitalAdminService:
         for user in users:
             user_roles = [role.name for role in user.roles]
             primary_role = next(
-                (r for r in staff_role_names if r in user_roles),
+                (r for r in _STAFF_ROLE_VALUES_ORDERED if r in user_roles),
                 None,
             )
             md = user.user_metadata or {}
             joining = md.get("joining_date")
             specialization = None
-            if primary_role == UserRole.DOCTOR:
+            if primary_role == UserRole.DOCTOR.value:
                 specialization = (
                     md.get("doctor_specialization")
                     or md.get("specialization")
@@ -1042,9 +1115,9 @@ class HospitalAdminService:
             
             # Generate staff name with appropriate title
             staff_name = f"{user.first_name} {user.last_name}"
-            if primary_role == UserRole.DOCTOR:
+            if primary_role == UserRole.DOCTOR.value:
                 staff_name = f"Dr. {staff_name}"
-            elif primary_role == UserRole.NURSE:
+            elif primary_role == UserRole.NURSE.value:
                 staff_name = f"Nurse {staff_name}"
             
             staff_list.append({
@@ -1106,21 +1179,14 @@ class HospitalAdminService:
             )
         
         user_roles = [role.name for role in user.roles]
-        staff_role_names = [
-            UserRole.DOCTOR,
-            UserRole.NURSE,
-            UserRole.RECEPTIONIST,
-            UserRole.LAB_TECH,
-            UserRole.PHARMACIST,
-        ]
-        if not any(role in staff_role_names for role in user_roles):
+        if not any(r in _STAFF_ROLE_VALUES_ORDERED for r in user_roles):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"code": "NOT_STAFF_USER", "message": "User is not a staff member"}
             )
 
         primary_role = next(
-            (r for r in staff_role_names if r in user_roles),
+            (r for r in _STAFF_ROLE_VALUES_ORDERED if r in user_roles),
             None,
         )
         md = user.user_metadata or {}
@@ -1130,7 +1196,7 @@ class HospitalAdminService:
         department_name = (str(dept_raw).strip() if dept_raw else None) or None
 
         profile_info = {}
-        if primary_role == UserRole.DOCTOR:
+        if primary_role == UserRole.DOCTOR.value:
             doctor_result = await self.db.execute(
                 select(DoctorProfile)
                 .options(selectinload(DoctorProfile.department))
@@ -1153,7 +1219,7 @@ class HospitalAdminService:
 
         role_str = primary_role or ""
         specialization = None
-        if primary_role == UserRole.DOCTOR:
+        if primary_role == UserRole.DOCTOR.value:
             specialization = (
                 profile_info.get("specialization")
                 or md.get("doctor_specialization")
@@ -1211,12 +1277,13 @@ class HospitalAdminService:
             )
 
         user_roles = [role.name for role in user.roles]
-        if expected_role not in user_roles:
+        exp = getattr(expected_role, "value", expected_role)
+        if exp not in user_roles:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={
                     "code": "ROLE_MISMATCH",
-                    "message": f"Staff user is not assigned role {expected_role}",
+                    "message": f"Staff user is not assigned role {exp}",
                 },
             )
         return user
@@ -1335,9 +1402,11 @@ class HospitalAdminService:
             if "doctor_specialization" in update_data:
                 doctor_profile.specialization = update_data["doctor_specialization"]
             if "doctor_experience_years" in update_data:
-                doctor_profile.experience_years = int(update_data["doctor_experience_years"])
+                doctor_profile.experience_years = _safe_int(
+                    update_data.get("doctor_experience_years"), 0
+                )
             if "consultation_fee" in update_data:
-                doctor_profile.consultation_fee = Decimal(str(update_data["consultation_fee"]))
+                doctor_profile.consultation_fee = _safe_decimal(update_data.get("consultation_fee"))
             if "consultation_type" in update_data:
                 doctor_profile.consultation_type = update_data["consultation_type"]
             if "availability_time" in update_data:
@@ -1349,7 +1418,7 @@ class HospitalAdminService:
         await self.db.commit()
         return {
             "user_id": str(user.id),
-            "role": UserRole.DOCTOR,
+            "role": UserRole.DOCTOR.value,
             "updated_fields": sorted(set(updated_fields)),
             "message": "Doctor staff updated successfully",
         }
@@ -1399,7 +1468,9 @@ class HospitalAdminService:
             if "nurse_specialization" in update_data:
                 nurse_profile.specialization = update_data["nurse_specialization"]
             if "nurse_experience_years" in update_data:
-                nurse_profile.experience_years = int(update_data["nurse_experience_years"])
+                nurse_profile.experience_years = _safe_int(
+                    update_data.get("nurse_experience_years"), 0
+                )
             if "shift_timing" in update_data:
                 nurse_profile.shift_type = _shift_type_from_timing(update_data["shift_timing"])
             nurse_profile.updated_at = datetime.utcnow()
@@ -1409,7 +1480,7 @@ class HospitalAdminService:
         await self.db.commit()
         return {
             "user_id": str(user.id),
-            "role": UserRole.NURSE,
+            "role": UserRole.NURSE.value,
             "updated_fields": sorted(set(updated_fields)),
             "message": "Nurse staff updated successfully",
         }
@@ -1466,7 +1537,9 @@ class HospitalAdminService:
             if "receptionist_work_area" in update_data:
                 receptionist_profile.work_area = update_data["receptionist_work_area"]
             if "receptionist_experience_years" in update_data:
-                receptionist_profile.experience_years = int(update_data["receptionist_experience_years"])
+                receptionist_profile.experience_years = _safe_int(
+                    update_data.get("receptionist_experience_years"), 0
+                )
             if "shift_timing" in update_data:
                 receptionist_profile.shift_type = _shift_type_from_timing(update_data["shift_timing"])
             receptionist_profile.updated_at = datetime.utcnow()
@@ -1476,7 +1549,7 @@ class HospitalAdminService:
         await self.db.commit()
         return {
             "user_id": str(user.id),
-            "role": UserRole.RECEPTIONIST,
+            "role": UserRole.RECEPTIONIST.value,
             "updated_fields": sorted(set(updated_fields)),
             "message": "Receptionist staff updated successfully",
         }
@@ -1507,7 +1580,7 @@ class HospitalAdminService:
         await self.db.commit()
         return {
             "user_id": str(user.id),
-            "role": UserRole.LAB_TECH,
+            "role": UserRole.LAB_TECH.value,
             "updated_fields": sorted(set(updated_fields)),
             "message": "Lab tech staff updated successfully",
         }
@@ -1538,7 +1611,7 @@ class HospitalAdminService:
         await self.db.commit()
         return {
             "user_id": str(user.id),
-            "role": UserRole.PHARMACIST,
+            "role": UserRole.PHARMACIST.value,
             "updated_fields": sorted(set(updated_fields)),
             "message": "Pharmacist staff updated successfully",
         }
@@ -1566,14 +1639,7 @@ class HospitalAdminService:
         
         # Check if user has staff role
         user_roles = [role.name for role in user.roles]
-        staff_role_names = [
-            UserRole.DOCTOR,
-            UserRole.NURSE,
-            UserRole.RECEPTIONIST,
-            UserRole.LAB_TECH,
-            UserRole.PHARMACIST,
-        ]
-        if not any(role in staff_role_names for role in user_roles):
+        if not any(r in _STAFF_ROLE_VALUES_ORDERED for r in user_roles):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"code": "NOT_STAFF_USER", "message": "User is not a staff member"}
@@ -1631,14 +1697,7 @@ class HospitalAdminService:
             )
         
         user_roles = [role.name for role in user.roles]
-        staff_role_names = [
-            UserRole.DOCTOR,
-            UserRole.NURSE,
-            UserRole.RECEPTIONIST,
-            UserRole.LAB_TECH,
-            UserRole.PHARMACIST,
-        ]
-        if not any(role in staff_role_names for role in user_roles):
+        if not any(r in _STAFF_ROLE_VALUES_ORDERED for r in user_roles):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"code": "NOT_STAFF_USER", "message": "User is not a staff member"}
@@ -4463,7 +4522,16 @@ class HospitalAdminService:
             select(func.count(User.id)).where(
                 and_(
                     User.hospital_id == self.hospital_id,
-                    User.roles.any(Role.name.in_([UserRole.DOCTOR, UserRole.LAB_TECH, UserRole.PHARMACIST, UserRole.HOSPITAL_ADMIN]))
+                    User.roles.any(
+                        Role.name.in_(
+                            [
+                                UserRole.DOCTOR.value,
+                                UserRole.LAB_TECH.value,
+                                UserRole.PHARMACIST.value,
+                                UserRole.HOSPITAL_ADMIN.value,
+                            ]
+                        )
+                    )
                 )
             )
         )
@@ -4689,7 +4757,16 @@ class HospitalAdminService:
             select(User).options(selectinload(User.roles)).where(
                 and_(
                     User.hospital_id == self.hospital_id,
-                    User.roles.any(Role.name.in_([UserRole.DOCTOR, UserRole.LAB_TECH, UserRole.PHARMACIST, UserRole.HOSPITAL_ADMIN]))
+                    User.roles.any(
+                        Role.name.in_(
+                            [
+                                UserRole.DOCTOR.value,
+                                UserRole.LAB_TECH.value,
+                                UserRole.PHARMACIST.value,
+                                UserRole.HOSPITAL_ADMIN.value,
+                            ]
+                        )
+                    )
                 )
             )
         )
@@ -4697,10 +4774,10 @@ class HospitalAdminService:
         
         # Categorize staff by role
         staff_by_role = {
-            UserRole.DOCTOR: [],
-            UserRole.LAB_TECH: [],
-            UserRole.PHARMACIST: [],
-            UserRole.HOSPITAL_ADMIN: []
+            UserRole.DOCTOR.value: [],
+            UserRole.LAB_TECH.value: [],
+            UserRole.PHARMACIST.value: [],
+            UserRole.HOSPITAL_ADMIN.value: [],
         }
         
         for user in staff_users:
@@ -4991,7 +5068,7 @@ class HospitalAdminService:
             and_(
                 User.id == doctor_id,
                 User.hospital_id == self.hospital_id,
-                User.roles.any(Role.name == UserRole.DOCTOR)
+                User.roles.any(Role.name == UserRole.DOCTOR.value)
             )
         )
         result = await self.db.execute(query)
@@ -5022,7 +5099,7 @@ class HospitalAdminService:
         query = select(User).options(selectinload(User.roles)).where(
             and_(
                 User.hospital_id == self.hospital_id,
-                User.roles.any(Role.name == UserRole.DOCTOR),
+                User.roles.any(Role.name == UserRole.DOCTOR.value),
                 User.first_name.ilike(first_name),
                 User.last_name.ilike(last_name)
             )
@@ -5037,7 +5114,7 @@ class HospitalAdminService:
         query = select(User).options(selectinload(User.roles)).where(
             and_(
                 User.hospital_id == self.hospital_id,
-                User.roles.any(Role.name == UserRole.DOCTOR),
+                User.roles.any(Role.name == UserRole.DOCTOR.value),
                 User.first_name.ilike(f"%{first_name}%"),
                 User.last_name.ilike(f"%{last_name}%")
             )
@@ -5696,7 +5773,17 @@ class HospitalAdminService:
         query = select(User).options(selectinload(User.roles)).where(
             and_(
                 User.hospital_id == self.hospital_id,
-                User.roles.any(Role.name.in_([UserRole.DOCTOR, UserRole.NURSE, UserRole.RECEPTIONIST, UserRole.PHARMACIST, UserRole.LAB_TECH])),
+                User.roles.any(
+                    Role.name.in_(
+                        [
+                            UserRole.DOCTOR.value,
+                            UserRole.NURSE.value,
+                            UserRole.RECEPTIONIST.value,
+                            UserRole.PHARMACIST.value,
+                            UserRole.LAB_TECH.value,
+                        ]
+                    )
+                ),
                 User.first_name.ilike(first_name),
                 User.last_name.ilike(last_name)
             )
@@ -5711,7 +5798,17 @@ class HospitalAdminService:
         query = select(User).options(selectinload(User.roles)).where(
             and_(
                 User.hospital_id == self.hospital_id,
-                User.roles.any(Role.name.in_([UserRole.DOCTOR, UserRole.NURSE, UserRole.RECEPTIONIST, UserRole.PHARMACIST, UserRole.LAB_TECH])),
+                User.roles.any(
+                    Role.name.in_(
+                        [
+                            UserRole.DOCTOR.value,
+                            UserRole.NURSE.value,
+                            UserRole.RECEPTIONIST.value,
+                            UserRole.PHARMACIST.value,
+                            UserRole.LAB_TECH.value,
+                        ]
+                    )
+                ),
                 User.first_name.ilike(f"%{first_name}%"),
                 User.last_name.ilike(f"%{last_name}%")
             )

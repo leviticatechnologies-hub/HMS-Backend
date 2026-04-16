@@ -26,6 +26,15 @@ from app.models.schedule import DoctorSchedule
 # Import patient models
 from app.models.patient import PatientProfile, Appointment, MedicalRecord, PatientDocument, Admission, DischargeSummary
 
+# OPD queue / consultation (outpatient visits)
+from app.models.opd_management import (
+    OpdVisit,
+    OpdConsultation,
+    OpdVitalSign,
+    OpdTokenLog,
+    OpdPatientTransfer,
+)
+
 # Import surgery models (after patient for relationship resolution)
 from app.models.surgery import (
     SurgeryCase,
@@ -122,6 +131,11 @@ __all__ = [
     "PatientDocument",
     "Admission",
     "DischargeSummary",
+    "OpdVisit",
+    "OpdConsultation",
+    "OpdVitalSign",
+    "OpdTokenLog",
+    "OpdPatientTransfer",
     
     # Surgery models
     "SurgeryCase",

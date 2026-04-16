@@ -319,6 +319,25 @@ class StaffCreate(BaseModel):
         max_length=500,
         description="For RECEPTIONIST only: public URL for profile photo (same as avatar)",
     )
+    # Shared with PATCH staff endpoints (same names as *StaffUpdate models)
+    middle_name: Optional[str] = Field(None, max_length=100)
+    designation: Optional[str] = Field(
+        None,
+        max_length=100,
+        description="For DOCTOR only: job title on doctor profile (e.g. Staff Physician)",
+    )
+    # NURSE — align with NurseStaffUpdate
+    nurse_designation: Optional[str] = Field(None, max_length=100)
+    nurse_specialization: Optional[str] = Field(None, max_length=255)
+    nurse_experience_years: Optional[int] = Field(None, ge=0, le=70)
+    # LAB_TECH — align with LabTechStaffUpdate
+    lab_specialization: Optional[str] = Field(None, max_length=255)
+    lab_designation: Optional[str] = Field(None, max_length=100)
+    lab_experience_years: Optional[int] = Field(None, ge=0, le=70)
+    # PHARMACIST — align with PharmacistStaffUpdate
+    pharmacist_specialization: Optional[str] = Field(None, max_length=255)
+    pharmacist_designation: Optional[str] = Field(None, max_length=100)
+    pharmacist_experience_years: Optional[int] = Field(None, ge=0, le=70)
 
     @model_validator(mode="after")
     def _doctor_only_professional_fields(self):
@@ -349,6 +368,29 @@ class StaffCreate(BaseModel):
             raise ValueError(
                 "receptionist_* / gender / blood_group / receptionist_profile_photo_url are only for RECEPTIONIST"
             )
+        if role != "DOCTOR" and self.designation and str(self.designation).strip():
+            raise ValueError("designation is only allowed when role is DOCTOR")
+        nurse_any = (
+            (self.nurse_designation is not None and str(self.nurse_designation).strip())
+            or (self.nurse_specialization is not None and str(self.nurse_specialization).strip())
+            or (self.nurse_experience_years is not None)
+        )
+        if nurse_any and role != "NURSE":
+            raise ValueError("nurse_designation, nurse_specialization, nurse_experience_years are only for NURSE")
+        lab_any = (
+            (self.lab_specialization is not None and str(self.lab_specialization).strip())
+            or (self.lab_designation is not None and str(self.lab_designation).strip())
+            or (self.lab_experience_years is not None)
+        )
+        if lab_any and role != "LAB_TECH":
+            raise ValueError("lab_* fields are only allowed when role is LAB_TECH")
+        pharm_any = (
+            (self.pharmacist_specialization is not None and str(self.pharmacist_specialization).strip())
+            or (self.pharmacist_designation is not None and str(self.pharmacist_designation).strip())
+            or (self.pharmacist_experience_years is not None)
+        )
+        if pharm_any and role != "PHARMACIST":
+            raise ValueError("pharmacist_* fields are only allowed when role is PHARMACIST")
         return self
 
     @field_validator("emergency_contact", "joining_date", "address", "shift_timing", mode="before")
