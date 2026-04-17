@@ -58,6 +58,23 @@ def _appointment_is_emergency(appointment: Any) -> bool:
         return True
     return (getattr(appointment, "appointment_type", None) or "").strip().upper() == "EMERGENCY"
 
+
+def _appointment_public_ref(appointment: Any) -> Optional[str]:
+    """Model uses `appointment_ref`; older code/docs used `appointment_number`."""
+    return getattr(appointment, "appointment_ref", None) or getattr(appointment, "appointment_number", None)
+
+
+def _format_appointment_time_display(value: Any) -> Optional[str]:
+    """`Appointment.appointment_time` is stored as a string (HH:MM or HH:MM:SS); tolerate datetime."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.strftime("%H:%M")
+    s = str(value).strip()
+    if len(s) >= 5 and s[2] == ":":
+        return s[:5]
+    return s or None
+
 def _age_from_date_of_birth(dob: Any) -> Optional[int]:
     """Compute age in years from DOB (date/datetime/ISO string). Returns None when unknown/unparseable."""
     if not dob:
@@ -2352,7 +2369,8 @@ class HospitalAdminService:
             
             appointment_list.append({
                 "id": str(appointment.id),
-                "appointment_number": appointment.appointment_number,
+                "appointment_number": _appointment_public_ref(appointment),
+                "appointment_ref": _appointment_public_ref(appointment),
                 "patient_id": str(appointment.patient_id),
                 "patient_name": patient_name,
                 "patient_phone": appointment.patient.user.phone if appointment.patient and appointment.patient.user else None,
@@ -2361,7 +2379,7 @@ class HospitalAdminService:
                 "department_id": str(appointment.department_id) if appointment.department_id else None,
                 "department_name": department_name,
                 "appointment_date": appointment.appointment_date,
-                "appointment_time": appointment.appointment_time.strftime("%H:%M") if appointment.appointment_time else None,
+                "appointment_time": _format_appointment_time_display(appointment.appointment_time),
                 "status": appointment.status,
                 "appointment_type": appointment.appointment_type,
                 "chief_complaint": appointment.chief_complaint,
@@ -2450,22 +2468,28 @@ class HospitalAdminService:
                 "location": appointment.department.location
             }
         
+        is_paid = getattr(appointment, "is_paid", None)
+        payment_status = None
+        if is_paid is not None:
+            payment_status = "paid" if is_paid else "unpaid"
+
         return {
             "id": str(appointment.id),
-            "appointment_number": appointment.appointment_number,
+            "appointment_number": _appointment_public_ref(appointment),
+            "appointment_ref": _appointment_public_ref(appointment),
             "patient": patient_info,
             "doctor": doctor_info,
             "department": department_info,
             "appointment_date": appointment.appointment_date,
-            "appointment_time": appointment.appointment_time.strftime("%H:%M") if appointment.appointment_time else None,
+            "appointment_time": _format_appointment_time_display(appointment.appointment_time),
             "status": appointment.status,
             "appointment_type": appointment.appointment_type,
             "chief_complaint": appointment.chief_complaint,
-            "symptoms": appointment.symptoms,
+            "symptoms": getattr(appointment, "symptoms", None),
             "notes": appointment.notes,
             "is_emergency": _appointment_is_emergency(appointment),
             "consultation_fee": float(appointment.consultation_fee) if appointment.consultation_fee else None,
-            "payment_status": appointment.payment_status,
+            "payment_status": payment_status,
             "created_at": appointment.created_at.isoformat(),
             "updated_at": appointment.updated_at.isoformat(),
             "cancelled_at": appointment.cancelled_at.isoformat() if appointment.cancelled_at else None,
@@ -2542,7 +2566,7 @@ class HospitalAdminService:
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail={"code": "INVALID_RESCHEDULE_DATE", "message": "reschedule_date must be a valid date"},
                     )
-                appointment.appointment_date = parsed_reschedule_date
+                appointment.appointment_date = parsed_reschedule_date.isoformat()
             if reschedule_time:
                 appointment.appointment_time = parse_time_string(reschedule_time)
             
