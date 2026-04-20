@@ -109,7 +109,7 @@ async def require_hospital_context(
     if "SUPER_ADMIN" not in context.get("roles", []):
         from app.models.tenant import HospitalSubscription, Hospital
         from sqlalchemy import select
-        from datetime import datetime as _dt
+        from datetime import datetime as _dt, timezone as _tz
         import uuid as _uuid
 
         hospital_id = _uuid.UUID(context["hospital_id"])
@@ -131,13 +131,17 @@ async def require_hospital_context(
         )
         sub = sub_result.scalar_one_or_none()
         if sub:
-            now = _dt.utcnow()
-            if sub.end_date and sub.end_date < now:
+            # Compare using timezone-aware UTC to avoid naive/aware TypeError.
+            now = _dt.now(_tz.utc)
+            end_date = sub.end_date
+            if end_date is not None and getattr(end_date, "tzinfo", None) is None:
+                end_date = end_date.replace(tzinfo=_tz.utc)
+            if end_date and end_date < now:
                 raise HTTPException(
                     status_code=status.HTTP_402_PAYMENT_REQUIRED,
                     detail={
                         "code": "SUBSCRIPTION_EXPIRED",
-                        "message": f"Subscription expired on {sub.end_date.strftime('%Y-%m-%d')}. Renew to continue.",
+                        "message": f"Subscription expired on {end_date.strftime('%Y-%m-%d')}. Renew to continue.",
                     }
                 )
             if sub.status in ("SUSPENDED", "CANCELLED"):
