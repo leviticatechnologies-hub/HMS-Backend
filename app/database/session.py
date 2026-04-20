@@ -37,6 +37,7 @@ _tenant_lock = threading.Lock()
 
 _hospital_tenant_cache: Dict[str, Tuple[Optional[str], float]] = {}
 _CACHE_TTL_SEC = 60.0
+_tenant_lab_schema_cache: Dict[str, Tuple[bool, float]] = {}
 
 # Startup patches in main.py target DATABASE_URL_SYNC only. Tenant DBs (and workers that skip
 # setup due to the advisory lock) need the same idempotent DDL applied lazily per DSN.
@@ -158,6 +159,39 @@ def _use_platform_for_path(path: str) -> bool:
     return False
 
 
+async def _tenant_has_core_lab_tables(db_name: str) -> bool:
+    """
+    Best-effort guard for legacy tenant DBs that were provisioned before lab migrations.
+    Returns True only when core lab tables exist in that tenant DB.
+    """
+    key = str(db_name or "").strip()
+    if not key:
+        return False
+    now = time.monotonic()
+    cached = _tenant_lab_schema_cache.get(key)
+    if cached is not None:
+        ok, ts = cached
+        if now - ts < _CACHE_TTL_SEC:
+            return ok
+
+    fac = get_tenant_session_factory(key)
+    ok = False
+    async with fac() as session:
+        result = await session.execute(
+            text(
+                """
+                SELECT
+                    to_regclass('public.lab_orders') IS NOT NULL
+                    AND to_regclass('public.lab_order_items') IS NOT NULL
+                    AND to_regclass('public.lab_samples') IS NOT NULL
+                """
+            )
+        )
+        ok = bool(result.scalar())
+    _tenant_lab_schema_cache[key] = (ok, now)
+    return ok
+
+
 async def get_platform_db_session() -> AsyncGenerator[AsyncSession, None]:
     """Platform DB session (users, hospitals registry, subscriptions)."""
     await _ensure_schema_drift_for_sync_dsn(settings.DATABASE_URL_SYNC)
@@ -232,6 +266,34 @@ async def get_db_session(request: Request) -> AsyncGenerator[AsyncSession, None]
     from app.services.tenant_database_provisioning import sync_url_for_tenant_database
 
     await _ensure_schema_drift_for_sync_dsn(sync_url_for_tenant_database(db_name))
+    # Lab endpoints can fail with DB 500 on older tenant DBs where lab tables don't exist.
+    # Fall back to platform DB instead of crashing.
+    if path.startswith("/api/v1/lab/"):
+        try:
+            has_lab_schema = await _tenant_has_core_lab_tables(db_name)
+        except Exception as e:
+            logger.warning(
+                "Failed to check lab schema for tenant DB '%s': %s; using platform DB",
+                db_name,
+                e,
+            )
+            has_lab_schema = False
+
+        if not has_lab_schema:
+            logger.warning(
+                "Tenant DB '%s' missing core lab tables; routing lab request to platform DB",
+                db_name,
+            )
+            async with AsyncSessionLocal() as session:
+                try:
+                    yield session
+                except Exception:
+                    await session.rollback()
+                    raise
+                finally:
+                    await session.close()
+            return
+
     fac = get_tenant_session_factory(db_name)
     async with fac() as session:
         try:
