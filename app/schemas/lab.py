@@ -5,7 +5,7 @@ Pydantic models for lab test catalogue, orders, and order items.
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator, ConfigDict
 from uuid import UUID
 
 from app.core.enums import (
@@ -241,15 +241,26 @@ class TestListResponse(BaseModel):
 # ============================================================================
 
 class OrderTestItem(BaseModel):
-    """Individual test item in an order"""
-    test_id: UUID = Field(..., description="UUID of the lab test")
+    """Individual test item in an order (API + Laboratory Portal table rows)."""
+    test_id: UUID = Field(
+        ...,
+        description="UUID of the lab test",
+        validation_alias=AliasChoices("test_id", "testId"),
+    )
+    sample_type: Optional[SampleType] = Field(
+        None,
+        description="Optional; if set, must match the catalogue test's required sample type",
+        validation_alias=AliasChoices("sample_type", "sampleType", "required_sample", "requiredSample"),
+    )
 
     model_config = ConfigDict(
+        populate_by_name=True,
         json_schema_extra={
             "example": {
-                "test_id": "123e4567-e89b-12d3-a456-426614174000"
+                "test_id": "123e4567-e89b-12d3-a456-426614174000",
+                "sample_type": "BLOOD",
             }
-        }
+        },
     )
 
 
@@ -269,40 +280,118 @@ class OrderReference(BaseModel):
 
 
 class OrderCreateRequest(BaseModel):
-    """Request schema for creating a lab order"""
-    patient_ref: str = Field(..., description="Patient reference (e.g. PAT-001)")
-    source: LabOrderSource = Field(..., description="Order source")
+    """
+    Request schema for creating a lab order.
+
+    Supports the Laboratory Portal "Register New Test" form:
+    patient identity (ref/id, name, age, gender, phone, email, registration date),
+    referring doctor, priority, test rows (test + optional sample), special instructions.
+    """
+    patient_ref: Optional[str] = Field(
+        None,
+        description="Patient reference (e.g. PAT-001)",
+        validation_alias=AliasChoices("patient_ref", "patientRef"),
+    )
+    patient_id: Optional[str] = Field(
+        None,
+        description="Same as patient_ref (portal field)",
+        validation_alias=AliasChoices("patient_id", "patientId"),
+    )
+    patient_name: Optional[str] = Field(
+        None,
+        max_length=255,
+        validation_alias=AliasChoices("patient_name", "patientName"),
+    )
+    age: Optional[int] = Field(None, ge=0, le=150)
+    gender: Optional[str] = Field(None, max_length=20)
+    phone: Optional[str] = Field(None, max_length=30)
+    email: Optional[str] = Field(None, max_length=255)
+    registration_date: Optional[str] = Field(
+        None,
+        max_length=32,
+        description="Registration date (YYYY-MM-DD or DD-MM-YYYY)",
+        validation_alias=AliasChoices("registration_date", "registrationDate"),
+    )
+
+    source: LabOrderSource = Field(
+        default=LabOrderSource.WALKIN,
+        description="Order source; portal defaults to WALKIN",
+    )
     priority: LabOrderPriority = Field(LabOrderPriority.ROUTINE, description="Order priority")
     tests: List[OrderTestItem] = Field(..., min_length=1, description="List of tests to order")
-    requested_by_doctor_ref: Optional[str] = Field(None, description="Doctor ref or name (required for DOCTOR source)")
+    requested_by_doctor_ref: Optional[str] = Field(
+        None,
+        description="Doctor ref or name (required when source is DOCTOR)",
+        validation_alias=AliasChoices("requested_by_doctor_ref", "requestedByDoctorRef"),
+    )
+    referring_doctor: Optional[str] = Field(
+        None,
+        description="Referring doctor name (portal); stored as requested_by_doctor_id string",
+        validation_alias=AliasChoices("referring_doctor", "referringDoctor"),
+    )
     reference: Optional[OrderReference] = Field(None, description="Optional reference information")
-    notes: Optional[str] = Field(None, max_length=1000, description="Order notes")
-    special_instructions: Optional[str] = Field(None, max_length=1000, description="Special instructions")
+    notes: Optional[str] = Field(None, max_length=2000, description="Order notes")
+    special_instructions: Optional[str] = Field(
+        None,
+        max_length=2000,
+        description="Special instructions",
+        validation_alias=AliasChoices("special_instructions", "specialInstructions"),
+    )
     create_as_draft: bool = Field(False, description="If true, order is created as DRAFT; use register endpoint to submit")
 
-    @field_validator('requested_by_doctor_ref')
-    @classmethod
-    def validate_doctor_required(cls, v, info):
-        values = info.data
-        if values.get('source') == LabOrderSource.DOCTOR and not v:
-            raise ValueError('requested_by_doctor_ref is required when source is DOCTOR')
-        return v
+    @model_validator(mode="after")
+    def normalize_portal_fields(self):
+        ref = (self.patient_ref or self.patient_id or "").strip()
+        if not ref:
+            raise ValueError("patient_ref or patient_id is required")
+        object.__setattr__(self, "patient_ref", ref)
+
+        doc = (self.requested_by_doctor_ref or self.referring_doctor or "").strip()
+        if doc:
+            object.__setattr__(self, "requested_by_doctor_ref", doc)
+
+        src = self.source
+        need_doc = src == LabOrderSource.DOCTOR or (
+            isinstance(src, str) and str(src).strip().upper() == "DOCTOR"
+        )
+        if need_doc and not (self.requested_by_doctor_ref or "").strip():
+            raise ValueError(
+                "requested_by_doctor_ref or referring_doctor is required when source is DOCTOR"
+            )
+        return self
 
     model_config = ConfigDict(
+        populate_by_name=True,
         json_schema_extra={
             "examples": [
+                {
+                    "patient_id": "PAT-10021",
+                    "patient_name": "Jane Doe",
+                    "age": 42,
+                    "gender": "FEMALE",
+                    "phone": "+919876543210",
+                    "email": "jane@example.com",
+                    "registration_date": "2026-04-16",
+                    "source": "WALKIN",
+                    "priority": "ROUTINE",
+                    "referring_doctor": "Dr. Smith",
+                    "tests": [
+                        {"test_id": "123e4567-e89b-12d3-a456-426614174000", "sample_type": "BLOOD"},
+                    ],
+                    "special_instructions": "Fasting sample",
+                },
                 {
                     "patient_ref": "PAT-10021",
                     "source": "WALKIN",
                     "priority": "ROUTINE",
                     "tests": [
                         {"test_id": "123e4567-e89b-12d3-a456-426614174000"},
-                        {"test_id": "123e4567-e89b-12d3-a456-426614174001"}
+                        {"test_id": "123e4567-e89b-12d3-a456-426614174001"},
                     ],
-                    "notes": "Fever since 3 days"
-                }
+                    "notes": "Fever since 3 days",
+                },
             ]
-        }
+        },
     )
 
 

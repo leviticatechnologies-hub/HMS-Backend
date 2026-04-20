@@ -2,7 +2,8 @@
 Admin schemas for super admin and hospital admin operations.
 """
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
+from uuid import UUID
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator, AliasChoices
 
 
 # ============================================================================
@@ -260,137 +261,21 @@ class StaffCreate(BaseModel):
         max_length=2000,
         description="Full postal address (stored in profile metadata)",
     )
-    doctor_specialization: Optional[str] = Field(
-        None,
-        max_length=255,
-        description="Optional; for doctors defaults to department name or General",
-    )
     department_name: Optional[str] = Field(
         None,
         min_length=1,
         max_length=100,
         description=(
-            "For DOCTOR only: existing department name in this hospital. "
-            "When set, creates doctor profile + primary department assignment on create."
+            "Optional on create. Department can also be assigned/changed later via role-specific PATCH endpoints."
         ),
     )
-    doctor_experience_years: Optional[int] = Field(
-        None,
-        ge=0,
-        le=70,
-        description="For DOCTOR only: years of professional experience",
-    )
-    consultation_fee: Optional[float] = Field(
-        None,
-        ge=0,
-        description="For DOCTOR only: standard consultation fee",
-    )
-    consultation_type: Optional[str] = Field(
-        None,
-        max_length=100,
-        description="For DOCTOR only: e.g. IN_PERSON, ONLINE, HYBRID",
-    )
-    availability_time: Optional[str] = Field(
-        None,
-        max_length=2000,
-        description="For DOCTOR only: human-readable availability (e.g. Mon-Fri 09:00-17:00)",
-    )
-    # --- RECEPTIONIST only (ignored for other roles; does not change doctor/nurse/lab/pharmacy create) ---
-    receptionist_work_area: Optional[str] = Field(
-        None,
-        max_length=100,
-        description="For RECEPTIONIST only: e.g. OPD, EMERGENCY",
-    )
-    receptionist_experience_years: Optional[int] = Field(
-        None,
-        ge=0,
-        le=60,
-        description="For RECEPTIONIST only: years of experience",
-    )
-    receptionist_designation: Optional[str] = Field(
-        None,
-        max_length=100,
-        description="For RECEPTIONIST only: job title",
-    )
-    gender: Optional[str] = Field(None, max_length=30, description="For RECEPTIONIST only")
-    blood_group: Optional[str] = Field(None, max_length=20, description="For RECEPTIONIST only")
-    receptionist_profile_photo_url: Optional[str] = Field(
-        None,
-        max_length=500,
-        description="For RECEPTIONIST only: public URL for profile photo (same as avatar)",
-    )
-    # Shared with PATCH staff endpoints (same names as *StaffUpdate models)
     middle_name: Optional[str] = Field(None, max_length=100)
-    designation: Optional[str] = Field(
-        None,
-        max_length=100,
-        description="For DOCTOR only: job title on doctor profile (e.g. Staff Physician)",
-    )
-    # NURSE — align with NurseStaffUpdate
-    nurse_designation: Optional[str] = Field(None, max_length=100)
-    nurse_specialization: Optional[str] = Field(None, max_length=255)
-    nurse_experience_years: Optional[int] = Field(None, ge=0, le=70)
-    # LAB_TECH — align with LabTechStaffUpdate
-    lab_specialization: Optional[str] = Field(None, max_length=255)
-    lab_designation: Optional[str] = Field(None, max_length=100)
-    lab_experience_years: Optional[int] = Field(None, ge=0, le=70)
-    # PHARMACIST — align with PharmacistStaffUpdate
-    pharmacist_specialization: Optional[str] = Field(None, max_length=255)
-    pharmacist_designation: Optional[str] = Field(None, max_length=100)
-    pharmacist_experience_years: Optional[int] = Field(None, ge=0, le=70)
 
     @model_validator(mode="after")
-    def _doctor_only_professional_fields(self):
+    def _create_staff_common_fields_only(self):
         role = (self.role or "").strip().upper()
-        if role != "DOCTOR":
-            if self.doctor_experience_years is not None:
-                raise ValueError("doctor_experience_years is only allowed when role is DOCTOR")
-            if self.consultation_fee is not None:
-                raise ValueError("consultation_fee is only allowed when role is DOCTOR")
-            if self.consultation_type and str(self.consultation_type).strip():
-                raise ValueError("consultation_type is only allowed when role is DOCTOR")
-            if self.availability_time and str(self.availability_time).strip():
-                raise ValueError("availability_time is only allowed when role is DOCTOR")
         if role not in ("DOCTOR", "NURSE", "RECEPTIONIST", "LAB_TECH", "PHARMACIST"):
-            if self.department_name and str(self.department_name).strip():
-                raise ValueError(
-                    "department_name is only allowed when role is DOCTOR, NURSE, RECEPTIONIST, LAB_TECH, or PHARMACIST"
-                )
-        recv_any = (
-            self.receptionist_work_area is not None
-            or self.receptionist_experience_years is not None
-            or (self.receptionist_designation is not None and str(self.receptionist_designation).strip())
-            or (self.gender is not None and str(self.gender).strip())
-            or (self.blood_group is not None and str(self.blood_group).strip())
-            or (self.receptionist_profile_photo_url is not None and str(self.receptionist_profile_photo_url).strip())
-        )
-        if recv_any and role != "RECEPTIONIST":
-            raise ValueError(
-                "receptionist_* / gender / blood_group / receptionist_profile_photo_url are only for RECEPTIONIST"
-            )
-        if role != "DOCTOR" and self.designation and str(self.designation).strip():
-            raise ValueError("designation is only allowed when role is DOCTOR")
-        nurse_any = (
-            (self.nurse_designation is not None and str(self.nurse_designation).strip())
-            or (self.nurse_specialization is not None and str(self.nurse_specialization).strip())
-            or (self.nurse_experience_years is not None)
-        )
-        if nurse_any and role != "NURSE":
-            raise ValueError("nurse_designation, nurse_specialization, nurse_experience_years are only for NURSE")
-        lab_any = (
-            (self.lab_specialization is not None and str(self.lab_specialization).strip())
-            or (self.lab_designation is not None and str(self.lab_designation).strip())
-            or (self.lab_experience_years is not None)
-        )
-        if lab_any and role != "LAB_TECH":
-            raise ValueError("lab_* fields are only allowed when role is LAB_TECH")
-        pharm_any = (
-            (self.pharmacist_specialization is not None and str(self.pharmacist_specialization).strip())
-            or (self.pharmacist_designation is not None and str(self.pharmacist_designation).strip())
-            or (self.pharmacist_experience_years is not None)
-        )
-        if pharm_any and role != "PHARMACIST":
-            raise ValueError("pharmacist_* fields are only allowed when role is PHARMACIST")
+            raise ValueError("role must be one of: DOCTOR, NURSE, RECEPTIONIST, LAB_TECH, PHARMACIST")
         return self
 
     @field_validator("emergency_contact", "joining_date", "address", "shift_timing", mode="before")
@@ -510,7 +395,15 @@ class AppointmentStatusUpdate(BaseModel):
     cancellation_reason: Optional[str] = Field(None, description="Reason if cancelling")
     reschedule_date: Optional[str] = Field(None, description="New date if rescheduling (YYYY-MM-DD)")
     reschedule_time: Optional[str] = Field(None, description="New time if rescheduling (HH:MM)")
-    new_doctor_ref: Optional[str] = Field(None, description="Doctor ref (e.g. DOC-xxx) or doctor name for reassignment")
+    new_doctor_ref: Optional[str] = Field(
+        None,
+        description="Doctor ref (e.g. DOC-xxx), doctor name, or UUID string for reassignment",
+    )
+    new_doctor_uuid: Optional[UUID] = Field(
+        None,
+        description="Doctor user UUID or doctor profile UUID (preferred when reassigning by UUID)",
+        validation_alias=AliasChoices("new_doctor_uuid", "doctor_uuid"),
+    )
 
 
 class PatientStatusUpdate(BaseModel):

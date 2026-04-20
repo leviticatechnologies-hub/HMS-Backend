@@ -3,6 +3,7 @@ Hospital Admin service for hospital-level administrative operations.
 Handles department management, staff management, and hospital operations.
 CRITICAL: All operations are scoped to the hospital_id from JWT token.
 """
+import re
 import uuid
 import random
 from decimal import Decimal
@@ -20,6 +21,17 @@ from app.models.patient import PatientProfile
 from app.models.doctor import DoctorProfile
 from app.core.enums import UserRole, UserStatus
 from app.core.security import SecurityManager
+
+
+def _normalize_doctor_lookup_string(ref: str) -> str:
+    """Strip braces/spaces; if input is 32 hex digits (with or without dashes), format as a standard UUID string."""
+    s = (ref or "").strip().strip("{}")
+    if not s:
+        return s
+    compact = re.sub(r"[^0-9a-fA-F]", "", s)
+    if len(compact) == 32:
+        return f"{compact[:8]}-{compact[8:12]}-{compact[12:16]}-{compact[16:20]}-{compact[20:32]}"
+    return s
 
 
 def _parse_iso_date(value: Optional[str]) -> Optional[date]:
@@ -814,92 +826,31 @@ class HospitalAdminService:
         if staff_data.get("address"):
             extra_md["address"] = staff_data["address"].strip()
 
+        # On CREATE keep only common fields in payload; role-specific fields are managed via PATCH endpoints.
         if role_name == UserRole.RECEPTIONIST:
-            g = (staff_data.get("gender") or "").strip()
-            if g:
-                extra_md["gender"] = g
-            bg = (staff_data.get("blood_group") or "").strip()
-            if bg:
-                extra_md["blood_group"] = bg
-            rw_meta = (staff_data.get("receptionist_work_area") or "OPD").strip()
-            extra_md["receptionist_work_area"] = rw_meta
-            rey_meta = 0
-            if staff_data.get("receptionist_experience_years") is not None:
-                try:
-                    rey_meta = max(0, int(staff_data["receptionist_experience_years"]))
-                except (TypeError, ValueError):
-                    rey_meta = 0
-            extra_md["receptionist_experience_years"] = rey_meta
-            rdn = (staff_data.get("receptionist_designation") or "Front Desk Receptionist").strip()
-            extra_md["receptionist_designation"] = rdn
-
+            extra_md.setdefault("receptionist_work_area", "OPD")
+            extra_md.setdefault("receptionist_experience_years", 0)
+            extra_md.setdefault("receptionist_designation", "Front Desk Receptionist")
         if role_name == UserRole.NURSE:
-            nd = (staff_data.get("nurse_designation") or "").strip()
-            if nd:
-                extra_md["nurse_designation"] = nd
-            ns = (staff_data.get("nurse_specialization") or "").strip()
-            if ns:
-                extra_md["nurse_specialization"] = ns
-            if staff_data.get("nurse_experience_years") is not None:
-                extra_md["nurse_experience_years"] = max(
-                    0, _safe_int(staff_data.get("nurse_experience_years"), 0)
-                )
+            extra_md.setdefault("nurse_designation", "Staff Nurse")
+            extra_md.setdefault("nurse_experience_years", 0)
         if role_name == UserRole.LAB_TECH:
-            for key in ("lab_specialization", "lab_designation"):
-                v = (staff_data.get(key) or "").strip()
-                if v:
-                    extra_md[key] = v
-            if staff_data.get("lab_experience_years") is not None:
-                extra_md["lab_experience_years"] = max(
-                    0, _safe_int(staff_data.get("lab_experience_years"), 0)
-                )
+            extra_md.setdefault("lab_experience_years", 0)
         if role_name == UserRole.PHARMACIST:
-            for key in ("pharmacist_specialization", "pharmacist_designation"):
-                v = (staff_data.get(key) or "").strip()
-                if v:
-                    extra_md[key] = v
-            if staff_data.get("pharmacist_experience_years") is not None:
-                extra_md["pharmacist_experience_years"] = max(
-                    0, _safe_int(staff_data.get("pharmacist_experience_years"), 0)
-                )
+            extra_md.setdefault("pharmacist_experience_years", 0)
         if role_name in (UserRole.LAB_TECH, UserRole.PHARMACIST) and department_for_create:
             extra_md["department_id"] = str(department_for_create.id)
             extra_md["department_name"] = department_for_create.name
 
-        spec = (
-            (staff_data.get("doctor_specialization") or "").strip()
-            or (staff_data.get("specialization") or "").strip()
-            or "General"
-        )
+        spec = (extra_md.get("doctor_specialization") or "").strip() or "General"
         if role_name == UserRole.DOCTOR:
             extra_md["doctor_specialization"] = spec
             extra_md["specialization"] = spec
-            ey = staff_data.get("doctor_experience_years")
-            if ey is not None:
-                try:
-                    extra_md["doctor_experience_years"] = max(0, int(ey))
-                except (TypeError, ValueError):
-                    extra_md["doctor_experience_years"] = 0
-            cf = staff_data.get("consultation_fee")
-            if cf is not None:
-                try:
-                    extra_md["consultation_fee"] = float(cf)
-                except (TypeError, ValueError):
-                    pass
-            ct = (staff_data.get("consultation_type") or "").strip()
-            if ct:
-                extra_md["consultation_type"] = ct
-            av = (staff_data.get("availability_time") or "").strip()
-            if av:
-                extra_md["availability_time"] = av
-            dd = (staff_data.get("designation") or "").strip()
-            if dd:
-                extra_md["designation"] = dd
+            extra_md.setdefault("doctor_experience_years", 0)
+            extra_md.setdefault("consultation_fee", 0)
 
         password_hash = self.security.hash_password(staff_data["password"])
         recv_profile_photo = None
-        if role_name == UserRole.RECEPTIONIST:
-            recv_profile_photo = (staff_data.get("receptionist_profile_photo_url") or "").strip() or None
 
         staff_id = generate_staff_id(
             role=role_name,
@@ -1004,7 +955,7 @@ class HospitalAdminService:
                 doc_ref = user.staff_id or f"DOC{str(uuid.uuid4())[:8].upper()}"
                 lic = f"AUTO-ML-{self.hospital_id.hex[:8]}-{uuid.uuid4().hex[:10]}".upper()
                 doc_designation = (
-                    (staff_data.get("designation") or "").strip() or "Staff Physician"
+                    (extra_md.get("designation") or "").strip() or "Staff Physician"
                 )
                 self.db.add(
                     DoctorProfile(
@@ -1239,7 +1190,20 @@ class HospitalAdminService:
                 "shift_timing": md.get("shift_timing"),
                 "hire_date": joining,
                 "joining_date": joining,
+                "department_name": md.get("department_name"),
                 "specialization": specialization,
+                "nurse_designation": md.get("nurse_designation"),
+                "nurse_specialization": md.get("nurse_specialization"),
+                "nurse_experience_years": md.get("nurse_experience_years"),
+                "receptionist_designation": md.get("receptionist_designation"),
+                "receptionist_work_area": md.get("receptionist_work_area"),
+                "receptionist_experience_years": md.get("receptionist_experience_years"),
+                "lab_designation": md.get("lab_designation"),
+                "lab_specialization": md.get("lab_specialization"),
+                "lab_experience_years": md.get("lab_experience_years"),
+                "pharmacist_designation": md.get("pharmacist_designation"),
+                "pharmacist_specialization": md.get("pharmacist_specialization"),
+                "pharmacist_experience_years": md.get("pharmacist_experience_years"),
                 "status": user.status,
                 "is_active": user.is_active,
                 "email_verified": user.email_verified,
@@ -1320,6 +1284,68 @@ class HospitalAdminService:
                     if doctor_profile.consultation_fee
                     else None,
                 }
+        elif primary_role == UserRole.NURSE.value:
+            from app.models.nurse import NurseProfile
+
+            nurse_result = await self.db.execute(
+                select(NurseProfile)
+                .options(selectinload(NurseProfile.department))
+                .where(
+                    and_(
+                        NurseProfile.user_id == staff_id,
+                        NurseProfile.hospital_id == self.hospital_id,
+                    )
+                )
+            )
+            nurse_profile = nurse_result.scalar_one_or_none()
+            if nurse_profile:
+                if getattr(nurse_profile, "department", None) and nurse_profile.department.name:
+                    department_name = nurse_profile.department.name
+                profile_info = {
+                    "nurse_id": nurse_profile.nurse_id,
+                    "nursing_license_number": nurse_profile.nursing_license_number,
+                    "designation": nurse_profile.designation,
+                    "specialization": nurse_profile.specialization,
+                    "experience_years": nurse_profile.experience_years,
+                    "shift_type": nurse_profile.shift_type,
+                }
+        elif primary_role == UserRole.RECEPTIONIST.value:
+            from app.models.receptionist import ReceptionistProfile
+
+            rec_result = await self.db.execute(
+                select(ReceptionistProfile)
+                .options(selectinload(ReceptionistProfile.department))
+                .where(
+                    and_(
+                        ReceptionistProfile.user_id == staff_id,
+                        ReceptionistProfile.hospital_id == self.hospital_id,
+                    )
+                )
+            )
+            rec_profile = rec_result.scalar_one_or_none()
+            if rec_profile:
+                if getattr(rec_profile, "department", None) and rec_profile.department.name:
+                    department_name = rec_profile.department.name
+                profile_info = {
+                    "receptionist_id": rec_profile.receptionist_id,
+                    "employee_id": rec_profile.employee_id,
+                    "designation": rec_profile.designation,
+                    "work_area": rec_profile.work_area,
+                    "experience_years": rec_profile.experience_years,
+                    "shift_type": rec_profile.shift_type,
+                }
+        elif primary_role == UserRole.LAB_TECH.value:
+            profile_info = {
+                "designation": md.get("lab_designation"),
+                "specialization": md.get("lab_specialization"),
+                "experience_years": md.get("lab_experience_years"),
+            }
+        elif primary_role == UserRole.PHARMACIST.value:
+            profile_info = {
+                "designation": md.get("pharmacist_designation"),
+                "specialization": md.get("pharmacist_specialization"),
+                "experience_years": md.get("pharmacist_experience_years"),
+            }
 
         role_str = primary_role or ""
         specialization = None
@@ -2504,20 +2530,27 @@ class HospitalAdminService:
         cancellation_reason: Optional[str] = None,
         reschedule_date: Optional[str] = None,
         reschedule_time: Optional[str] = None,
-        new_doctor_ref: Optional[str] = None
+        new_doctor_ref: Optional[str] = None,
+        new_doctor_uuid: Optional[uuid.UUID] = None,
     ) -> Dict[str, Any]:
-        """Update appointment status with admin oversight. new_doctor_ref: doctor ref (DOC-xxx) or doctor name."""
+        """Update appointment status with admin oversight. Doctor reassignment: new_doctor_uuid (preferred) or new_doctor_ref (DOC-xxx, name, or UUID string)."""
         from app.models.patient import Appointment
         from app.core.utils import parse_time_string
         
-        # Resolve new_doctor_ref to DoctorProfile if provided (use .user_id for appointment.doctor_id)
+        # Resolve to DoctorProfile if provided (use .user_id for appointment.doctor_id)
+        doctor_lookup: Optional[str] = None
+        if new_doctor_uuid is not None:
+            doctor_lookup = str(new_doctor_uuid)
+        elif new_doctor_ref and str(new_doctor_ref).strip():
+            doctor_lookup = str(new_doctor_ref).strip()
+
         resolved_new_doctor = None
-        if new_doctor_ref:
-            resolved_new_doctor = await self._get_hospital_doctor_by_ref_or_name(new_doctor_ref)
+        if doctor_lookup:
+            resolved_new_doctor = await self._get_hospital_doctor_by_ref_or_name(doctor_lookup)
             if not resolved_new_doctor:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail={"code": "DOCTOR_NOT_FOUND", "message": f"Doctor not found: {new_doctor_ref}"}
+                    detail={"code": "DOCTOR_NOT_FOUND", "message": f"Doctor not found: {doctor_lookup}"}
                 )
         
         # Get appointment
@@ -2574,7 +2607,7 @@ class HospitalAdminService:
             if new_status in ["CANCELLED", "NO_SHOW"]:
                 new_status = "SCHEDULED"
         
-        # Handle doctor reassignment (resolved_new_doctor already resolved from new_doctor_ref)
+        # Handle doctor reassignment (resolved from new_doctor_uuid or new_doctor_ref)
         if resolved_new_doctor:
             appointment.doctor_id = resolved_new_doctor.user_id
             if resolved_new_doctor.department_id:
@@ -2598,6 +2631,7 @@ class HospitalAdminService:
                 "reschedule_date": reschedule_date,
                 "reschedule_time": reschedule_time,
                 "new_doctor_ref": new_doctor_ref,
+                "new_doctor_uuid": str(new_doctor_uuid) if new_doctor_uuid else None,
                 "cancellation_reason": cancellation_reason,
                 "admin_notes": admin_notes
             },
@@ -5276,7 +5310,7 @@ class HospitalAdminService:
     async def _get_hospital_doctor_by_ref_or_name(self, ref_or_name: str) -> Optional['DoctorProfile']:
         """Resolve doctor ref (DOC-xxx, UUID) or doctor name to DoctorProfile. Returns profile with .user_id for appointment.doctor_id."""
         from app.models.doctor import DoctorProfile
-        ref = (ref_or_name or "").strip()
+        ref = _normalize_doctor_lookup_string(ref_or_name or "")
         if not ref:
             return None
         # 1) Try as UUID (DoctorProfile.id or User.id)

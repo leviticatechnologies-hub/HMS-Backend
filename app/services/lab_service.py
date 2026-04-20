@@ -330,9 +330,26 @@ class LabService:
         try:
             # Generate unique lab order number
             lab_order_no = await self._generate_lab_order_number()
-            
+
+            def _row_test_id(row: Any) -> uuid.UUID:
+                if isinstance(row, dict):
+                    tid = row.get("test_id")
+                else:
+                    tid = getattr(row, "test_id", None)
+                if tid is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail={"code": "INVALID_TESTS", "message": "Each test row must include test_id"},
+                    )
+                return tid if isinstance(tid, uuid.UUID) else uuid.UUID(str(tid))
+
+            def _row_sample_type(row: Any):
+                if isinstance(row, dict):
+                    return row.get("sample_type")
+                return getattr(row, "sample_type", None)
+
             # Validate tests exist
-            test_ids = [item['test_id'] for item in order_data['tests']]
+            test_ids = [_row_test_id(item) for item in order_data["tests"]]
             tests_result = await self.db.execute(
                 select(LabTest).where(
                     and_(
@@ -354,6 +371,28 @@ class LabService:
                         "message": f"Tests not found or inactive: {missing_ids}"
                     }
                 )
+
+            test_by_id = {t.id: t for t in tests}
+            for row in order_data["tests"]:
+                st = _row_sample_type(row)
+                if st is None:
+                    continue
+                tid = _row_test_id(row)
+                catalog = test_by_id.get(tid)
+                if not catalog:
+                    continue
+                st_val = st.value if hasattr(st, "value") else str(st)
+                if str(st_val).strip().upper() != str(catalog.sample_type).strip().upper():
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail={
+                            "code": "SAMPLE_TYPE_MISMATCH",
+                            "message": (
+                                f"Sample type for test {tid} must match catalogue "
+                                f"({catalog.sample_type}); got {st_val}"
+                            ),
+                        },
+                    )
             
             create_as_draft = order_data.get("create_as_draft", False)
             initial_status = LabOrderStatus.DRAFT if create_as_draft else LabOrderStatus.REGISTERED
@@ -361,20 +400,48 @@ class LabService:
 
             # Create lab order (API uses patient_ref / requested_by_doctor_ref; DB columns stay patient_id / requested_by_doctor_id)
             patient_ref = order_data.get("patient_ref") or order_data.get("patient_id")
-            doctor_ref = order_data.get("requested_by_doctor_ref") or order_data.get("requested_by_doctor_id")
+            doctor_ref = (
+                order_data.get("requested_by_doctor_ref")
+                or order_data.get("referring_doctor")
+                or order_data.get("requested_by_doctor_id")
+            )
             if not patient_ref:
                 raise HTTPException(status_code=400, detail={"code": "MISSING_PATIENT_REF", "message": "patient_ref is required"})
+
+            src = order_data.get("source", LabOrderSource.WALKIN)
+            src_val = src.value if hasattr(src, "value") else str(src)
+
+            pri = order_data.get("priority", LabOrderPriority.ROUTINE)
+            pri_val = pri.value if hasattr(pri, "value") else str(pri)
+
+            portal_lines = []
+            for label, key in [
+                ("Patient name", "patient_name"),
+                ("Age", "age"),
+                ("Gender", "gender"),
+                ("Phone", "phone"),
+                ("Email", "email"),
+                ("Registration date", "registration_date"),
+            ]:
+                v = order_data.get(key)
+                if v is not None and str(v).strip() != "":
+                    portal_lines.append(f"{label}: {v}")
+            merged_notes = order_data.get("notes")
+            if portal_lines:
+                block = "[Portal registration]\n" + "\n".join(portal_lines)
+                merged_notes = f"{block}\n\n{merged_notes}" if merged_notes else block
+
             order = LabOrder(
                 hospital_id=self.hospital_id,
                 lab_order_no=lab_order_no,
                 patient_id=patient_ref,
                 requested_by_doctor_id=doctor_ref,
-                source=order_data["source"].value,
-                priority=order_data.get("priority", LabOrderPriority.ROUTINE).value,
+                source=src_val,
+                priority=pri_val,
                 status=initial_status,
                 encounter_id=(order_data.get("reference") or {}).get("encounter_id"),
                 prescription_id=(order_data.get("reference") or {}).get("prescription_id"),
-                notes=order_data.get("notes"),
+                notes=merged_notes,
                 special_instructions=order_data.get("special_instructions"),
             )
 

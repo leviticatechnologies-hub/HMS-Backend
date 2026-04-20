@@ -598,7 +598,8 @@ async def update_appointment_status(
         cancellation_reason=status_update.cancellation_reason,
         reschedule_date=status_update.reschedule_date,
         reschedule_time=status_update.reschedule_time,
-        new_doctor_ref=status_update.new_doctor_ref
+        new_doctor_ref=status_update.new_doctor_ref,
+        new_doctor_uuid=status_update.new_doctor_uuid,
     )
     return result
 
