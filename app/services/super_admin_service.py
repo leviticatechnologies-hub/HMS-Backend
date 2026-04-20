@@ -900,6 +900,238 @@ class SuperAdminService:
             },
         }
 
+    async def get_dashboard_overview_cards(
+        self,
+        period_days: int = 30,
+        trend_months: int = 6,
+    ) -> Dict[str, Any]:
+        """
+        Super Admin home dashboard — three KPI cards:
+        operational hospitals count, paid active subscriptions, platform revenue (successful payments).
+        Includes period-over-period growth and per-month series for sparkline/bar charts.
+        """
+        from datetime import timezone as _tz
+        from dateutil.relativedelta import relativedelta
+        from app.models.billing import BillingPayment
+
+        now = datetime.now(_tz.utc)
+        period_days = max(1, min(365, int(period_days)))
+        trend_months = max(1, min(24, int(trend_months)))
+
+        cur_start = now - timedelta(days=period_days)
+        prev_start = now - timedelta(days=2 * period_days)
+
+        operational = and_(
+            Hospital.status == HospitalStatus.ACTIVE.value,
+            Hospital.is_active.is_(True),
+        )
+
+        total_hospitals = int(
+            (await self.db.execute(select(func.count(Hospital.id)).where(operational))).scalar() or 0
+        )
+
+        new_h_cur = int(
+            (
+                await self.db.execute(
+                    select(func.count(Hospital.id)).where(Hospital.created_at >= cur_start)
+                )
+            ).scalar()
+            or 0
+        )
+        new_h_prev = int(
+            (
+                await self.db.execute(
+                    select(func.count(Hospital.id)).where(
+                        Hospital.created_at >= prev_start,
+                        Hospital.created_at < cur_start,
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+
+        paid_plan_filter = SubscriptionPlanModel.name != SubscriptionPlan.FREE.value
+
+        active_paid_plans = int(
+            (
+                await self.db.execute(
+                    select(func.count(HospitalSubscription.id))
+                    .join(SubscriptionPlanModel, SubscriptionPlanModel.id == HospitalSubscription.plan_id)
+                    .where(
+                        HospitalSubscription.status == SubscriptionStatus.ACTIVE.value,
+                        paid_plan_filter,
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+
+        new_sub_cur = int(
+            (
+                await self.db.execute(
+                    select(func.count(HospitalSubscription.id))
+                    .join(SubscriptionPlanModel, SubscriptionPlanModel.id == HospitalSubscription.plan_id)
+                    .where(
+                        HospitalSubscription.created_at >= cur_start,
+                        paid_plan_filter,
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+        new_sub_prev = int(
+            (
+                await self.db.execute(
+                    select(func.count(HospitalSubscription.id))
+                    .join(SubscriptionPlanModel, SubscriptionPlanModel.id == HospitalSubscription.plan_id)
+                    .where(
+                        HospitalSubscription.created_at >= prev_start,
+                        HospitalSubscription.created_at < cur_start,
+                        paid_plan_filter,
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+
+        platform_revenue_total = float(
+            (
+                await self.db.execute(
+                    select(func.coalesce(func.sum(BillingPayment.amount), 0)).where(
+                        BillingPayment.status == "SUCCESS"
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+
+        rev_cur = float(
+            (
+                await self.db.execute(
+                    select(func.coalesce(func.sum(BillingPayment.amount), 0)).where(
+                        BillingPayment.status == "SUCCESS",
+                        BillingPayment.paid_at >= cur_start,
+                        BillingPayment.paid_at.isnot(None),
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+        rev_prev = float(
+            (
+                await self.db.execute(
+                    select(func.coalesce(func.sum(BillingPayment.amount), 0)).where(
+                        BillingPayment.status == "SUCCESS",
+                        BillingPayment.paid_at >= prev_start,
+                        BillingPayment.paid_at < cur_start,
+                        BillingPayment.paid_at.isnot(None),
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+
+        def _growth(curr: float, prev: float) -> float:
+            if prev > 0:
+                return round((curr - prev) / prev * 100, 2)
+            if curr > 0:
+                return 100.0
+            return 0.0
+
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - relativedelta(
+            months=trend_months - 1
+        )
+
+        hospitals_trend: List[Dict[str, Any]] = []
+        subscriptions_trend: List[Dict[str, Any]] = []
+        revenue_trend: List[Dict[str, Any]] = []
+
+        for i in range(trend_months):
+            ms = month_start + relativedelta(months=i)
+            me = ms + relativedelta(months=1)
+            period_label = ms.strftime("%Y-%m")
+
+            hc = int(
+                (
+                    await self.db.execute(
+                        select(func.count(Hospital.id)).where(
+                            Hospital.created_at >= ms,
+                            Hospital.created_at < me,
+                        )
+                    )
+                ).scalar()
+                or 0
+            )
+            hospitals_trend.append({"period": period_label, "value": hc})
+
+            sc = int(
+                (
+                    await self.db.execute(
+                        select(func.count(HospitalSubscription.id))
+                        .join(SubscriptionPlanModel, SubscriptionPlanModel.id == HospitalSubscription.plan_id)
+                        .where(
+                            HospitalSubscription.created_at >= ms,
+                            HospitalSubscription.created_at < me,
+                            paid_plan_filter,
+                        )
+                    )
+                ).scalar()
+                or 0
+            )
+            subscriptions_trend.append({"period": period_label, "value": sc})
+
+            rv = float(
+                (
+                    await self.db.execute(
+                        select(func.coalesce(func.sum(BillingPayment.amount), 0)).where(
+                            BillingPayment.status == "SUCCESS",
+                            BillingPayment.paid_at >= ms,
+                            BillingPayment.paid_at < me,
+                        )
+                    )
+                ).scalar()
+                or 0
+            )
+            revenue_trend.append({"period": period_label, "value": round(rv, 2)})
+
+        return {
+            "period_days": period_days,
+            "trend_months": trend_months,
+            "total_hospitals": {
+                "title": "TOTAL HOSPITALS",
+                "value": total_hospitals,
+                "subtitle": "Currently operational",
+                "growth_percent": _growth(float(new_h_cur), float(new_h_prev)),
+                "growth_basis": (
+                    f"New hospital registrations in the last {period_days} days vs the previous {period_days} days."
+                ),
+                "trend": hospitals_trend,
+            },
+            "active_plans": {
+                "title": "ACTIVE PLANS",
+                "value": active_paid_plans,
+                "subtitle": "Paid subscriptions",
+                "growth_percent": _growth(float(new_sub_cur), float(new_sub_prev)),
+                "growth_basis": (
+                    f"New paid (non-FREE) subscriptions created in the last {period_days} days vs the previous "
+                    f"{period_days} days."
+                ),
+                "trend": subscriptions_trend,
+            },
+            "platform_revenue": {
+                "title": "PLATFORM REVENUE",
+                "value": round(platform_revenue_total, 2),
+                "currency": "INR",
+                "subtitle": "All hospitals combined",
+                "growth_percent": _growth(rev_cur, rev_prev),
+                "growth_basis": (
+                    f"Successful billing payments with paid_at in the last {period_days} days vs the previous "
+                    f"{period_days} days."
+                ),
+                "trend": revenue_trend,
+            },
+        }
+
     # ============================================================================
     # SUPER ADMIN - ANALYTICS REPORTS (Subscription / Financial / Performance)
     # ============================================================================

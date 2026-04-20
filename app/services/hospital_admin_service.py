@@ -2601,7 +2601,9 @@ class HospitalAdminService:
                     )
                 appointment.appointment_date = parsed_reschedule_date.isoformat()
             if reschedule_time:
-                appointment.appointment_time = parse_time_string(reschedule_time)
+                # Column is VARCHAR; asyncpg rejects datetime.time — store HH:MM:SS
+                _t = parse_time_string(reschedule_time)
+                appointment.appointment_time = _t.strftime("%H:%M:%S")
             
             # If rescheduling, typically set status to SCHEDULED
             if new_status in ["CANCELLED", "NO_SHOW"]:

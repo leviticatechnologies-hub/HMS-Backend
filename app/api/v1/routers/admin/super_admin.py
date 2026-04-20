@@ -1004,6 +1004,40 @@ async def get_platform_analytics(
     return result
 
 
+@router.get("/dashboard/overview-cards", tags=["Super Admin - Analytics & Monitoring"])
+async def get_dashboard_overview_cards(
+    period_days: int = Query(
+        30,
+        ge=1,
+        le=365,
+        description="Window length in days for growth % (current vs previous window of same length).",
+    ),
+    trend_months: int = Query(
+        6,
+        ge=1,
+        le=24,
+        description="Number of calendar months of per-month trend points for charts.",
+    ),
+    current_user: User = Depends(require_super_admin()),
+    service: SuperAdminService = Depends(get_super_admin_service),
+):
+    """
+    **Super Admin dashboard top cards** (Levitica-style overview):
+
+    - **total_hospitals**: Count of hospitals with `status=ACTIVE` and `is_active=true`.
+    - **active_plans**: Count of `ACTIVE` subscriptions on a **non-FREE** plan (paid tiers).
+    - **platform_revenue**: Sum of all **SUCCESS** `BillingPayment` rows (all hospitals; amounts as stored).
+
+    **growth_percent** compares the **current** rolling window to the **previous** window of `period_days`
+    (new hospitals, new paid subscriptions, and revenue with `paid_at` in window). Use **trend** for bar/sparkline charts.
+    """
+    data = await service.get_dashboard_overview_cards(
+        period_days=period_days,
+        trend_months=trend_months,
+    )
+    return SuccessResponse(success=True, message="Dashboard overview cards", data=data).dict()
+
+
 # ============================================================================
 # SUBSCRIPTION / FINANCIAL / PERFORMANCE ANALYTICS
 # ============================================================================
