@@ -624,12 +624,18 @@ class SampleListResponse(BaseModel):
 
 # Basic request schemas for other operations
 class SampleCollectRequest(BaseModel):
-    """Request for sample collection"""
-    samples: List[Dict[str, Any]] = Field(..., min_length=1)
+    """PATCH .../samples/{id}/collect — single sample collection details."""
+
+    collection_site: Optional[str] = None
+    collector_notes: Optional[str] = None
+    volume_ml: Optional[Decimal] = None
+
 
 class SampleReceiveRequest(BaseModel):
-    """Request for sample receiving"""
-    samples: List[Dict[str, Any]] = Field(..., min_length=1)
+    """PATCH .../samples/{id}/receive — sample received in lab."""
+
+    received_location: Optional[str] = None
+    notes: Optional[str] = None
 
 class SampleRejectRequest(BaseModel):
     """Request for sample rejection"""

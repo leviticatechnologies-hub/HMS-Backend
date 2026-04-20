@@ -1426,11 +1426,10 @@ class LabService:
                 conditions.append(Sample.patient_id.ilike(f"%{patient_id_filter}%"))
             
             if order_no_filter:
-                # Join with LabOrder to filter by order number
-                order_subquery = select(LabOrder.id).where(
+                order_ids = select(LabOrder.id).where(
                     LabOrder.lab_order_no.ilike(f"%{order_no_filter}%")
-                ).scalar_subquery()
-                conditions.append(Sample.lab_order_id.in_(order_subquery))
+                )
+                conditions.append(Sample.lab_order_id.in_(order_ids))
             
             if date_from:
                 conditions.append(Sample.created_at >= date_from)

@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db_session
+from app.core.database import get_db_session, get_platform_db_session
 from app.core.security import get_current_user
 from app.models.user import User
 from app.models.patient import PatientProfile
@@ -83,7 +83,7 @@ def get_current_hospital_context(
 
 async def require_hospital_context(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_platform_db_session),
 ) -> Dict[str, Any]:
     """
     Ensure user has hospital context (tenant isolation) AND that the hospital's
@@ -92,6 +92,10 @@ async def require_hospital_context(
     FIX: Previously subscription status was never checked — expired hospitals
     could use all features indefinitely. Now every hospital-scoped request is
     gated by subscription validity.
+
+    Uses **platform DB** for Hospital / HospitalSubscription reads. Request-scoped
+    ``get_db_session`` may point at a **tenant** database (hospital data tables only);
+    registry rows for hospitals and subscriptions always live on the platform DB.
     """
     context = get_current_hospital_context(current_user)
 

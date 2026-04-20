@@ -234,6 +234,79 @@ async def list_samples(
     return SampleListResponse(**result)
 
 
+# NOTE: Register /scan, /utils, /stats, /bulk BEFORE /{sample_id} so those segments are not
+# captured as a sample UUID.
+
+
+@router.get("/scan/{barcode_value}", response_model=SampleResponse)
+async def scan_sample_barcode(
+    barcode_value: str,
+    current_user: User = Depends(verify_lab_tech_role),
+    service: LabService = Depends(get_lab_service)
+):
+    """Find sample by scanning barcode or QR code."""
+    result = await service.scan_sample_by_barcode(barcode_value)
+    return SampleResponse(**result)
+
+
+@router.get("/utils/container-types", response_model=dict)
+async def get_container_types(
+    current_user: User = Depends(verify_lab_tech_role)
+):
+    return {
+        "container_types": [
+            {"value": container.value, "label": container.value.replace("_", " ").title()}
+            for container in ContainerType
+        ]
+    }
+
+
+@router.get("/utils/sample-statuses", response_model=dict)
+async def get_sample_statuses(
+    current_user: User = Depends(verify_lab_tech_role)
+):
+    return {
+        "statuses": [
+            {"value": s.value, "label": s.value.replace("_", " ").title()}
+            for s in SampleStatus
+        ]
+    }
+
+
+@router.get("/utils/rejection-reasons", response_model=dict)
+async def get_rejection_reasons(
+    current_user: User = Depends(verify_lab_tech_role)
+):
+    return {
+        "rejection_reasons": [
+            {"value": reason.value, "label": reason.value.replace("_", " ").title()}
+            for reason in RejectionReason
+        ]
+    }
+
+
+@router.get("/stats", response_model=dict)
+async def get_sample_collection_statistics(
+    current_user: User = Depends(verify_lab_tech_role),
+    service: LabService = Depends(get_lab_service)
+):
+    stats = await service.get_sample_collection_statistics()
+    return stats
+
+
+@router.post("/bulk/collect", response_model=BulkCollectResponse)
+async def bulk_collect_samples(
+    bulk_data: BulkCollectRequest,
+    current_user: User = Depends(verify_lab_tech_role),
+    service: LabService = Depends(get_lab_service)
+):
+    result = await service.bulk_collect_samples(
+        bulk_data.model_dump()["samples"],
+        str(current_user.id)
+    )
+    return BulkCollectResponse(**result)
+
+
 @router.get("/{sample_id}", response_model=SampleResponse)
 async def get_sample_details(
     sample_id: str,
@@ -348,41 +421,6 @@ async def get_sample_barcode_image(
         )
     
     return Response(content=png_bytes, media_type="image/png")
-
-
-@router.get("/scan/{barcode_value}", response_model=SampleResponse)
-async def scan_sample_barcode(
-    barcode_value: str,
-    current_user: User = Depends(verify_lab_tech_role),
-    service: LabService = Depends(get_lab_service)
-):
-    """
-    Find sample by scanning barcode or QR code.
-    
-    **Access Control:**
-    - Available to LAB_TECH role only
-    - Hospital isolation enforced (only finds samples from user's hospital)
-    
-    **Barcode Formats Supported:**
-    - Sample barcodes: LAB-ORD-{order_no}-SMP-{seq}
-    - QR codes: Same as barcode values
-    - Custom barcode values
-    
-    **Returns:**
-    - Complete sample information
-    - Associated tests and their status
-    - Current sample status and location
-    - Collection and processing history
-    
-    **Use Cases:**
-    - Mobile barcode scanning
-    - Sample tracking workflow
-    - Quick sample lookup
-    - Collection verification
-    - Lab receiving workflow
-    """
-    result = await service.scan_sample_by_barcode(barcode_value)
-    return SampleResponse(**result)
 
 
 # ============================================================================
@@ -570,133 +608,3 @@ async def reject_sample(
         sample_uuid, reject_data.model_dump(), str(current_user.id)
     )
     return MessageResponse(**result)
-
-
-# ============================================================================
-# BULK OPERATIONS ENDPOINTS
-# ============================================================================
-
-@router.post("/bulk/collect", response_model=BulkCollectResponse)
-async def bulk_collect_samples(
-    bulk_data: BulkCollectRequest,
-    current_user: User = Depends(verify_lab_tech_role),
-    service: LabService = Depends(get_lab_service)
-):
-    """
-    Collect multiple samples in one operation.
-    
-    **Access Control:**
-    - Only users with LAB_TECH role can perform bulk collection
-    - Hospital isolation enforced for all samples
-    
-    **Bulk Collection Rules:**
-    - Processes multiple samples in a single transaction
-    - Each sample is validated individually
-    - Failed samples don't affect successful ones
-    - Returns detailed results for each sample
-    
-    **Use Cases:**
-    - **Collection Rounds**: Collect samples during ward rounds
-    - **Camp Collections**: Mass collection events
-    - **IPD Collections**: Multiple patients in same ward
-    - **Mobile Collection**: Field collection scenarios
-    
-    **Error Handling:**
-    - Individual sample failures are reported separately
-    - Successful collections are committed even if some fail
-    - Detailed error messages for each failed sample
-    - Summary statistics for the entire operation
-    
-    **Collection Round Tracking:**
-    - Optional collection round identifier
-    - Helps group related collections
-    - Useful for audit and tracking purposes
-    """
-    result = await service.bulk_collect_samples(
-        bulk_data.model_dump()["samples"],
-        str(current_user.id)
-    )
-    return BulkCollectResponse(**result)
-
-
-# ============================================================================
-# UTILITY ENDPOINTS
-# ============================================================================
-
-@router.get("/utils/container-types", response_model=dict)
-async def get_container_types(
-    current_user: User = Depends(verify_lab_tech_role)
-):
-    """
-    Get list of available container types.
-    
-    **Returns:**
-    - All available container types with their values
-    - Useful for frontend dropdowns and sample creation
-    """
-    return {
-        "container_types": [
-            {"value": container.value, "label": container.value.replace("_", " ").title()}
-            for container in ContainerType
-        ]
-    }
-
-
-@router.get("/utils/sample-statuses", response_model=dict)
-async def get_sample_statuses(
-    current_user: User = Depends(verify_lab_tech_role)
-):
-    """
-    Get list of available sample statuses.
-    
-    **Returns:**
-    - All available sample statuses with their values
-    - Useful for frontend dropdowns and filtering
-    """
-    return {
-        "statuses": [
-            {"value": status.value, "label": status.value.replace("_", " ").title()}
-            for status in SampleStatus
-        ]
-    }
-
-
-@router.get("/utils/rejection-reasons", response_model=dict)
-async def get_rejection_reasons(
-    current_user: User = Depends(verify_lab_tech_role)
-):
-    """
-    Get list of available rejection reasons.
-    
-    **Returns:**
-    - All available rejection reasons with their values
-    - Useful for frontend dropdowns when rejecting samples
-    """
-    return {
-        "rejection_reasons": [
-            {"value": reason.value, "label": reason.value.replace("_", " ").title()}
-            for reason in RejectionReason
-        ]
-    }
-
-
-@router.get("/stats", response_model=dict)
-async def get_sample_collection_statistics(
-    current_user: User = Depends(verify_lab_tech_role),
-    service: LabService = Depends(get_lab_service)
-):
-    """
-    Get sample collection statistics for the hospital.
-    
-    **Access Control:**
-    - Available to LAB_TECH role only
-    - Statistics are scoped to user's hospital
-    
-    **Returns:**
-    - Total samples count
-    - Samples by status breakdown
-    - Collection performance metrics
-    - Rejection statistics
-    """
-    stats = await service.get_sample_collection_statistics()
-    return stats
