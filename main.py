@@ -21,6 +21,7 @@ from app.core.config import settings
 from app.database.session import init_database, close_database, get_db_session, get_async_engine
 from app.middleware.tenant_isolation import TenantIsolationMiddleware
 from app.middleware.clinical_audit import ClinicalAuditMiddleware
+from app.middleware.hospital_admin_audit import HospitalAdminAuditMiddleware
 from app.api.v1.api import api_router
 from app.core.exceptions import (
     http_exception_handler,
@@ -778,6 +779,9 @@ app.add_middleware(TenantIsolationMiddleware)
 
 # FIX: Add clinical audit trail middleware for HIPAA compliance
 app.add_middleware(ClinicalAuditMiddleware)
+
+# Hospital Admin API access → audit_logs (resource_type HospitalAdmin)
+app.add_middleware(HospitalAdminAuditMiddleware)
 
 # Add global exception handlers (order matters: more specific first)
 app.add_exception_handler(IntegrityError, integrity_error_handler)

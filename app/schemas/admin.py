@@ -838,6 +838,50 @@ class RevenueSummaryReportOut(BaseModel):
     revenue_trend: List[Dict[str, Any]]
 
 
+class HospitalAdminAuditSummaryOut(BaseModel):
+    """Dashboard card counts (matches Hospital Admin → Audit Logs UI)."""
+
+    total_logs: int = Field(..., description="All recorded Hospital Admin API activities")
+    user_logins: int = Field(
+        ...,
+        description="Successful read/access events (HTTP GET → VIEW); maps to ‘User Logins’ / access card",
+    )
+    updates: int = Field(..., description="Data modifications (UPDATE)")
+    creations: int = Field(..., description="New operations (CREATE)")
+    deletions: int = Field(0, description="Deletes (DELETE)")
+
+
+class HospitalAdminAuditLogItemOut(BaseModel):
+    """Single audit row for the Hospital Admin table (user, action, resource, time, IP)."""
+
+    id: str
+    user_id: str
+    user_name: str = Field(..., description="Display name from User profile")
+    action: str = Field(
+        ...,
+        description="Display action: View, Create, Update, Delete, Login, …",
+    )
+    action_code: str = Field(
+        ...,
+        description="Stored code: VIEW, CREATE, UPDATE, DELETE",
+    )
+    resource: str = Field(
+        ...,
+        description="Affected area, e.g. Department, Settings, Patient, Report",
+    )
+    timestamp: str = Field(..., description="ISO-8601 time of the event")
+    ip_address: Optional[str] = None
+    description: Optional[str] = Field(None, description="Technical: method + path")
+
+
+class HospitalAdminAuditLogListOut(BaseModel):
+    summary: HospitalAdminAuditSummaryOut
+    items: List[HospitalAdminAuditLogItemOut]
+    total: int
+    skip: int
+    limit: int
+
+
 class AdmissionListOut(BaseModel):
     """Admission list response"""
     admissions: List[Dict[str, Any]]

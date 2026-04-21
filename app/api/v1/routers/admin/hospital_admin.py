@@ -5,11 +5,14 @@ CRITICAL: All operations are scoped to hospital_id from JWT token.
 """
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from sqlalchemy import select, func, desc, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, List, Dict, Any
 
 from app.api.deps import (
-    get_db_session, require_hospital_admin, require_hospital_admin_context,
+    get_db_session,
+    require_hospital_admin,
+    require_hospital_admin_context,
     get_current_hospital_context,
 )
 from app.core.database import get_platform_db_session
@@ -17,7 +20,7 @@ from app.dependencies.auth import require_hospital_context
 from app.schemas.plan_features import HospitalFeatureFlagsOut
 from app.services.subscription_feature_service import get_plan_info_for_hospital
 from app.services.hospital_admin_service import HospitalAdminService
-from app.models.user import User
+from app.models.user import User, AuditLog
 from app.core.enums import UserRole
 from app.schemas.admin import (
     DepartmentCreate, DepartmentUpdate, DepartmentStatusUpdate,
@@ -28,7 +31,9 @@ from app.schemas.admin import (
     BedCreate, BedStatusUpdate, AdmissionCreate, BedAssignmentCreate,
     DischargeCreate, DepartmentAssignmentCreate, DepartmentUnassignmentCreate,
     DashboardOverviewOut, StaffStatisticsOut, AppointmentStatisticsOut,
-    BedOccupancyReportOut, DepartmentPerformanceReportOut, RevenueSummaryReportOut,
+    BedOccupancyReportOut, DepartmentPerformanceReportOut,     RevenueSummaryReportOut,
+    HospitalAdminAuditLogListOut,
+    HospitalAdminAuditSummaryOut,
     AdmissionListOut, WardListOut, BedListOut, BedDetailsOut,
     PatientListOut, AppointmentListOut, AppointmentDetailsOut,
     StaffListOut, StaffDetailsOut, DepartmentListOut, DepartmentDetailsOut
@@ -1140,6 +1145,97 @@ async def get_appointment_statistics(
     """
     result = await service.get_appointment_statistics()
     return result
+
+
+# ============================================================================
+# AUDIT — Hospital Admin API access trail (middleware + list)
+# ============================================================================
+
+
+@router.get(
+    "/audit-logs",
+    response_model=HospitalAdminAuditLogListOut,
+    tags=["Hospital Admin - Audit"],
+)
+async def list_hospital_admin_audit_logs(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    _user: User = Depends(require_hospital_admin()),
+    context: Dict[str, Any] = Depends(require_hospital_admin_context()),
+    db: AsyncSession = Depends(get_platform_db_session),
+):
+    """
+    List audit records for Hospital Admin module activity (`resource_type` = HospitalAdmin),
+    written automatically by middleware for `/api/v1/hospital-admin/*` requests.
+
+    Returns **summary** card counts (total, access/read events, updates, creations, deletions)
+    and **items** with `user_name`, display `action`, `resource`, and `timestamp` for the UI table.
+    """
+    from app.utils.hospital_admin_audit_labels import action_display_from_code, resource_from_row
+
+    hid = uuid.UUID(context["hospital_id"])
+    base_filt = and_(
+        AuditLog.hospital_id == hid,
+        AuditLog.resource_type == "HospitalAdmin",
+    )
+
+    async def _count_action(action_code: str) -> int:
+        return (
+            await db.execute(
+                select(func.count(AuditLog.id)).where(
+                    base_filt,
+                    AuditLog.action == action_code,
+                )
+            )
+        ).scalar() or 0
+
+    total_logs = (
+        await db.execute(select(func.count(AuditLog.id)).where(base_filt))
+    ).scalar() or 0
+
+    summary = HospitalAdminAuditSummaryOut(
+        total_logs=total_logs,
+        user_logins=await _count_action("VIEW"),
+        updates=await _count_action("UPDATE"),
+        creations=await _count_action("CREATE"),
+        deletions=await _count_action("DELETE"),
+    )
+
+    row_result = await db.execute(
+        select(AuditLog, User.first_name, User.last_name)
+        .outerjoin(User, AuditLog.user_id == User.id)
+        .where(base_filt)
+        .order_by(desc(AuditLog.created_at))
+        .offset(skip)
+        .limit(limit)
+    )
+    items: List[Dict[str, Any]] = []
+    for r, fn, ln in row_result.all():
+        nv = r.new_values if isinstance(r.new_values, dict) else {}
+        user_name = (f"{fn or ''} {ln or ''}").strip() or "Unknown user"
+        action_code = (r.action or "").upper()
+        resource = resource_from_row(nv, r.description or "")
+        items.append(
+            {
+                "id": str(r.id),
+                "user_id": str(r.user_id),
+                "user_name": user_name,
+                "action": action_display_from_code(action_code),
+                "action_code": action_code,
+                "resource": resource,
+                "timestamp": r.created_at.isoformat() if r.created_at else "",
+                "ip_address": r.ip_address,
+                "description": r.description,
+            }
+        )
+
+    return HospitalAdminAuditLogListOut(
+        summary=summary,
+        items=items,
+        total=total_logs,
+        skip=skip,
+        limit=limit,
+    )
 
 
 # ============================================================================
