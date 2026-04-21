@@ -869,8 +869,8 @@ class AuthService:
     
     async def patient_login(self, email: str, password: str) -> Dict[str, Any]:
         """Patient login - requires email verification"""
-        # Get user
-        user = await self._get_user_by_email(email)
+        normalized_email = (email or "").strip().lower()
+        user = await self._get_user_by_email(normalized_email)
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1240,13 +1240,14 @@ class AuthService:
         return password
     
     async def _get_user_by_email(self, email: str) -> Optional[User]:
-        """Get user by email with roles loaded"""
+        """Get user by email with roles loaded (case-insensitive; trims stored email)."""
         from sqlalchemy.orm import selectinload
+
         normalized_email = (email or "").strip().lower()
         result = await self.db.execute(
             select(User)
             .options(selectinload(User.roles).selectinload(Role.permissions))
-            .where(func.lower(User.email) == normalized_email)
+            .where(func.lower(func.trim(User.email)) == normalized_email)
         )
         return result.scalar_one_or_none()
     

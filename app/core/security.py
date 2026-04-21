@@ -45,6 +45,8 @@ class SecurityManager:
     @staticmethod
     def verify_password(plain_password: str, hashed_password: str) -> bool:
         """Verify a password against its hash"""
+        if not hashed_password or not str(hashed_password).strip():
+            return False
         try:
             return pwd_context.verify(plain_password, hashed_password)
         except Exception as e:

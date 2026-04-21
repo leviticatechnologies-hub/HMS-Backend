@@ -4448,26 +4448,21 @@ class HospitalAdminService:
         }
     
     async def get_revenue_summary_report(
-        self, 
+        self,
         date_from: Optional[str] = None,
-        date_to: Optional[str] = None
+        date_to: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Generate revenue summary report - DISABLED: Billing module removed"""
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail={"code": "BILLING_REMOVED", "message": "Revenue summary report requires billing module which has been removed"}
-        )
-        
-        # from app.models.patient import Appointment
-        # from app.models.hospital import Department
-        
-        # Set default date range (last 30 days if not specified)
+        """
+        Revenue summary from completed-appointment consultation fees.
+        Does not use invoices or the removed billing module.
+        """
+        from app.models.patient import Appointment
+
         if not date_from:
             date_from = (datetime.utcnow() - timedelta(days=30)).date().isoformat()
         if not date_to:
             date_to = datetime.utcnow().date().isoformat()
-        
-        # Get appointments in date range
+
         appointments_result = await self.db.execute(
             select(Appointment).options(
                 selectinload(Appointment.department)
@@ -4476,151 +4471,65 @@ class HospitalAdminService:
                     Appointment.hospital_id == self.hospital_id,
                     Appointment.appointment_date >= date_from,
                     Appointment.appointment_date <= date_to,
-                    Appointment.status == "COMPLETED"
+                    Appointment.status == "COMPLETED",
                 )
             )
         )
         appointments = appointments_result.scalars().all()
-        
-        # Get invoices in date range
-        invoices_result = await self.db.execute(
-            select(Invoice).where(
+
+        def _fee(apt: Any) -> float:
+            if apt.consultation_fee is None:
+                return 0.0
+            return float(apt.consultation_fee)
+
+        total_revenue = round(sum(_fee(apt) for apt in appointments), 2)
+
+        today_d = datetime.utcnow().date()
+        month_start_s = today_d.replace(day=1).isoformat()
+        today_s = today_d.isoformat()
+        month_result = await self.db.execute(
+            select(Appointment).where(
                 and_(
-                    Invoice.hospital_id == self.hospital_id,
-                    Invoice.invoice_date >= date_from,
-                    Invoice.invoice_date <= date_to
+                    Appointment.hospital_id == self.hospital_id,
+                    Appointment.appointment_date >= month_start_s,
+                    Appointment.appointment_date <= today_s,
+                    Appointment.status == "COMPLETED",
                 )
             )
         )
-        invoices = invoices_result.scalars().all()
-        
-        # Get payments in date range
-        payments_result = await self.db.execute(
-            select(Payment).where(
-                and_(
-                    Payment.hospital_id == self.hospital_id,
-                    Payment.payment_date >= date_from,
-                    Payment.payment_date <= date_to,
-                    Payment.status == "COMPLETED"
-                )
+        month_appointments = month_result.scalars().all()
+        revenue_this_month = round(sum(_fee(apt) for apt in month_appointments), 2)
+
+        revenue_by_department: Dict[str, float] = {}
+        for apt in appointments:
+            dept_name = apt.department.name if apt.department else "Unassigned"
+            revenue_by_department[dept_name] = revenue_by_department.get(dept_name, 0.0) + _fee(apt)
+        revenue_by_department = {k: round(v, 2) for k, v in revenue_by_department.items()}
+
+        end_d = _parse_iso_date(date_to) or datetime.utcnow().date()
+        revenue_trend: List[Dict[str, Any]] = []
+        for i in range(6, -1, -1):
+            d = end_d - timedelta(days=i)
+            day_appointments = [
+                apt
+                for apt in appointments
+                if _appointment_calendar_day(apt.appointment_date) == d
+            ]
+            rev = round(sum(_fee(apt) for apt in day_appointments), 2)
+            revenue_trend.append(
+                {
+                    "date": d.isoformat(),
+                    "revenue": rev,
+                    "appointment_count": len(day_appointments),
+                }
             )
-        )
-        payments = payments_result.scalars().all()
-        
-        # Calculate consultation revenue
-        consultation_revenue = sum([
-            float(apt.consultation_fee) for apt in appointments 
-            if apt.consultation_fee
-        ])
-        
-        # Calculate invoice totals
-        total_invoiced = sum([float(inv.total_amount) for inv in invoices])
-        total_paid = sum([float(pay.amount) for pay in payments])
-        outstanding_amount = total_invoiced - total_paid
-        
-        # Revenue by department
-        department_revenue = {}
-        for appointment in appointments:
-            if appointment.department and appointment.consultation_fee:
-                dept_name = appointment.department.name
-                if dept_name not in department_revenue:
-                    department_revenue[dept_name] = {
-                        "department_id": str(appointment.department_id),
-                        "appointment_count": 0,
-                        "revenue": 0
-                    }
-                department_revenue[dept_name]["appointment_count"] += 1
-                department_revenue[dept_name]["revenue"] += float(appointment.consultation_fee)
-        
-        # Convert to list and sort by revenue
-        department_revenue_list = [
-            {"department_name": name, **data} 
-            for name, data in department_revenue.items()
-        ]
-        department_revenue_list.sort(key=lambda x: x["revenue"], reverse=True)
-        
-        # Daily revenue trend (last 7 days)
-        daily_revenue = []
-        for i in range(7):
-            trend_date = (datetime.utcnow() - timedelta(days=i)).date().isoformat()
-            
-            daily_appointments = [
-                apt for apt in appointments 
-                if apt.appointment_date == trend_date
-            ]
-            
-            daily_payments = [
-                pay for pay in payments 
-                if pay.payment_date == trend_date
-            ]
-            
-            daily_consultation_revenue = sum([
-                float(apt.consultation_fee) for apt in daily_appointments 
-                if apt.consultation_fee
-            ])
-            
-            daily_payment_revenue = sum([
-                float(pay.amount) for pay in daily_payments
-            ])
-            
-            daily_revenue.append({
-                "date": trend_date,
-                "consultation_revenue": daily_consultation_revenue,
-                "payment_revenue": daily_payment_revenue,
-                "total_revenue": daily_consultation_revenue + daily_payment_revenue,
-                "appointment_count": len(daily_appointments)
-            })
-        
-        daily_revenue.reverse()  # Show oldest to newest
-        
-        # Payment method breakdown
-        payment_methods = {}
-        for payment in payments:
-            method = payment.payment_method or "Unknown"
-            if method not in payment_methods:
-                payment_methods[method] = {"count": 0, "amount": 0}
-            payment_methods[method]["count"] += 1
-            payment_methods[method]["amount"] += float(payment.amount)
-        
-        payment_method_list = [
-            {"method": method, **data} 
-            for method, data in payment_methods.items()
-        ]
-        payment_method_list.sort(key=lambda x: x["amount"], reverse=True)
-        
+
         return {
             "report_type": "revenue_summary",
-            "generated_at": datetime.utcnow().isoformat(),
-            "date_range": {
-                "from": date_from,
-                "to": date_to
-            },
-            "revenue_summary": {
-                "consultation_revenue": consultation_revenue,
-                "total_invoiced": total_invoiced,
-                "total_paid": total_paid,
-                "outstanding_amount": outstanding_amount,
-                "collection_rate": round(
-                    (total_paid / total_invoiced * 100) 
-                    if total_invoiced > 0 else 0, 1
-                )
-            },
-            "department_revenue": department_revenue_list,
-            "daily_revenue_trend": daily_revenue,
-            "payment_methods": payment_method_list,
-            "statistics": {
-                "total_appointments": len(appointments),
-                "total_invoices": len(invoices),
-                "total_payments": len(payments),
-                "avg_consultation_fee": round(
-                    (consultation_revenue / len(appointments)) 
-                    if len(appointments) > 0 else 0, 2
-                ),
-                "avg_invoice_amount": round(
-                    (total_invoiced / len(invoices)) 
-                    if len(invoices) > 0 else 0, 2
-                )
-            }
+            "total_revenue": total_revenue,
+            "revenue_this_month": revenue_this_month,
+            "revenue_by_department": revenue_by_department,
+            "revenue_trend": revenue_trend,
         }
 
     # ============================================================================

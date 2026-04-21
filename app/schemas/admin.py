@@ -744,21 +744,89 @@ class AppointmentStatisticsOut(BaseModel):
     appointment_types: List[AppointmentTypeCountItem]
 
 
-class BedOccupancyReportOut(BaseModel):
-    """Bed occupancy report response"""
-    report_type: str
+class BedOccupancySummary(BaseModel):
     total_beds: int
     occupied_beds: int
     available_beds: int
+    maintenance_beds: int
+    reserved_beds: int
     occupancy_rate: float
-    beds_by_ward: Dict[str, Dict[str, int]]
+    average_length_of_stay: float
+
+
+class BedOccupancyWardBreakdownItem(BaseModel):
+    ward_name: str
+    ward_id: Optional[str] = None
+    total_beds: int
+    occupied: int
+    available: int
+    maintenance: int
+    reserved: int
+    occupancy_rate: float
+
+
+class BedOccupancyDailyTrendItem(BaseModel):
+    date: str
+    admissions: int
+    discharges: int
+    net_change: int
+
+
+class BedOccupancyReportOut(BaseModel):
+    """Bed occupancy report (matches HospitalAdminService.get_bed_occupancy_report)."""
+
+    report_type: str
+    generated_at: str
+    date_range: AppointmentDateRange
+    summary: BedOccupancySummary
+    ward_breakdown: List[BedOccupancyWardBreakdownItem]
+    daily_trends: List[BedOccupancyDailyTrendItem]
+    total_admissions: int
+    total_discharges: int
+
+
+class DepartmentPerformanceMetricsOut(BaseModel):
+    total_appointments: int
+    completed_appointments: int
+    cancelled_appointments: int
+    no_show_appointments: int
+    completion_rate: float
+    cancellation_rate: float
+    no_show_rate: float
+    avg_appointments_per_doctor: float
+
+
+class DepartmentPerformanceRevenueOut(BaseModel):
+    total_revenue: float
+    avg_revenue_per_appointment: float
+
+
+class DepartmentPerformanceItemOut(BaseModel):
+    department_id: str
+    department_name: str
+    department_code: Optional[str] = None
+    head_doctor: Optional[str] = None
+    doctor_count: int
+    metrics: DepartmentPerformanceMetricsOut
+    revenue: DepartmentPerformanceRevenueOut
+
+
+class DepartmentReportHospitalSummaryOut(BaseModel):
+    total_departments: int
+    total_doctors: int
+    total_appointments: int
+    total_revenue: float
+    avg_appointments_per_department: float
 
 
 class DepartmentPerformanceReportOut(BaseModel):
-    """Department performance report response"""
+    """Department performance report (matches HospitalAdminService.get_department_performance_report)."""
+
     report_type: str
-    departments: List[Dict[str, Any]]
-    top_performing_departments: List[str]
+    generated_at: str
+    date_range: AppointmentDateRange
+    hospital_summary: DepartmentReportHospitalSummaryOut
+    department_performance: List[DepartmentPerformanceItemOut]
 
 
 class RevenueSummaryReportOut(BaseModel):

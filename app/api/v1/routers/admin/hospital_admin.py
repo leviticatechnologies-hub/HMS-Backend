@@ -1070,13 +1070,9 @@ async def get_revenue_summary_report(
 ):
     """
     Generate revenue summary report.
-    
-    Provides financial performance analytics:
-    - Consultation revenue and billing summaries
-    - Department-wise revenue breakdown
-    - Payment collection rates and outstanding amounts
-    - Daily revenue trends and forecasting
-    - Payment method analysis
+
+    Uses completed-appointment consultation fees (no invoice/billing module).
+    Includes department breakdown and a 7-day revenue trend ending on ``date_to``.
     """
     result = await service.get_revenue_summary_report(
         date_from=date_from,
