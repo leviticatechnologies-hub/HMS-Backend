@@ -211,20 +211,32 @@ except ImportError as e:
 # 10. LAB MODULE
 # ============================================================================
 try:
+    from app.api.v1.routers.lab.lab_equipment import router as lab_equipment_router
+    from app.api.v1.routers.lab.lab_tech_dashboard import router as lab_tech_dashboard_router
+    from app.api.v1.routers.lab.lab_critical_results import router as lab_critical_results_router
     from app.api.v1.routers.lab.lab_test_registration import router as lab_test_registration_router
-    from app.api.v1.routers.lab.lab_sample_collection import router as lab_sample_collection_router
-    from app.api.v1.routers.lab.lab_result_entry import router as lab_result_entry_router
-    from app.api.v1.routers.lab.lab_equipment_qc import router as lab_equipment_qc_router
-    from app.api.v1.routers.lab.lab_report_access import router as lab_report_access_router
-    from app.api.v1.routers.lab.lab_audit_compliance import router as lab_audit_compliance_router
+    from app.api.v1.routers.lab.lab_sample_tracking import router as lab_sample_tracking_router
+    from app.api.v1.routers.lab.lab_report_generation import router as lab_report_generation_router
+    from app.api.v1.routers.lab.lab_result_access import router as lab_result_access_router
+    from app.api.v1.routers.lab.lab_test_catalogue import router as lab_test_catalogue_router
+    from app.api.v1.routers.lab.lab_equipment_tracking import router as lab_equipment_tracking_router
+    from app.api.v1.routers.lab.lab_quality_control import router as lab_quality_control_router
+    from app.api.v1.routers.lab.lab_profile import router as lab_profile_router
 
+    api_router.include_router(lab_equipment_router, dependencies=_lab_dep)
+    api_router.include_router(lab_tech_dashboard_router, dependencies=_lab_dep)
+    api_router.include_router(lab_critical_results_router, dependencies=_lab_dep)
     api_router.include_router(lab_test_registration_router, dependencies=_lab_dep)
-    api_router.include_router(lab_sample_collection_router, dependencies=_lab_dep)
-    api_router.include_router(lab_result_entry_router, dependencies=_lab_dep)
-    api_router.include_router(lab_equipment_qc_router, dependencies=_lab_dep)
-    api_router.include_router(lab_report_access_router, dependencies=_lab_dep)
-    api_router.include_router(lab_audit_compliance_router, dependencies=_lab_dep)
-    logger.info("✓ Lab routers loaded (6 routers)")
+    api_router.include_router(lab_sample_tracking_router, dependencies=_lab_dep)
+    api_router.include_router(lab_report_generation_router, dependencies=_lab_dep)
+    api_router.include_router(lab_result_access_router, dependencies=_lab_dep)
+    api_router.include_router(lab_test_catalogue_router, dependencies=_lab_dep)
+    api_router.include_router(lab_equipment_tracking_router, dependencies=_lab_dep)
+    api_router.include_router(lab_quality_control_router, dependencies=_lab_dep)
+    api_router.include_router(lab_profile_router, dependencies=_lab_dep)
+    logger.info(
+        "✓ Lab routers loaded (equipment + tech dashboard + critical results + test registration + sample tracking + report generation + result access + test catalogue + equipment tracking + quality control + profile)"
+    )
 except ImportError as e:
     logger.error(f"✗ Failed to load lab routers: {e}")
 

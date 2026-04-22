@@ -53,22 +53,8 @@ class Hospital(BaseModel):
     suppliers = relationship("Supplier", foreign_keys="Supplier.hospital_id", back_populates="hospital")
     purchase_orders = relationship("PurchaseOrder", foreign_keys="PurchaseOrder.hospital_id", back_populates="hospital")
     sales = relationship("Sale", foreign_keys="Sale.hospital_id", back_populates="hospital")
-    # Lab relationships (no back_populates - models inherit from TenantBaseModel)
-    lab_test_categories = relationship("LabTestCategory", back_populates="hospital")
-    lab_tests = relationship("LabTest", back_populates="hospital")
-    lab_orders = relationship("LabOrder", back_populates="hospital")
-    lab_samples = relationship("Sample", back_populates="hospital")
-    test_results = relationship("TestResult", back_populates="hospital")
-    lab_reports = relationship("LabReport", back_populates="hospital")
+    # Lab (minimal: equipment + maintenance)
     lab_equipment = relationship("Equipment", back_populates="hospital")
-    qc_rules = relationship("QCRule", back_populates="hospital")
-    qc_runs = relationship("QCRun", back_populates="hospital")
-    report_share_tokens = relationship("ReportShareToken", back_populates="hospital")
-    notifications = relationship("NotificationOutbox", back_populates="hospital")
-    report_access_logs = relationship("ReportAccess", back_populates="hospital")
-    lab_audit_logs = relationship("LabAuditLog", back_populates="hospital")
-    chain_of_custody = relationship("ChainOfCustody", back_populates="hospital")
-    compliance_exports = relationship("ComplianceExport", back_populates="hospital")
     
     def __repr__(self):
         return f"<Hospital(id={self.id}, name='{self.name}')>"

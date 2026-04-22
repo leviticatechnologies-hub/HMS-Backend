@@ -121,8 +121,8 @@ class PrescriptionLabOrder(TenantBaseModel):
     # Link to prescription
     prescription_id = Column(UUID_TYPE, ForeignKey("tele_prescriptions.id"), nullable=False, index=True)
     
-    # Lab test information
-    lab_test_id = Column(UUID_TYPE, ForeignKey("lab_tests.id"), nullable=True)  # Optional FK
+    # Optional reference to a catalogue test id (no FK; lab module may be minimal/rebuilt)
+    lab_test_id = Column(UUID_TYPE, nullable=True, index=True)
     test_name = Column(String(200), nullable=False)  # Always store for immutability
     test_code = Column(String(50), nullable=True)
     test_category = Column(String(100), nullable=True)
@@ -141,7 +141,6 @@ class PrescriptionLabOrder(TenantBaseModel):
     
     # Relationships
     prescription = relationship("TelePrescription", back_populates="lab_orders")
-    lab_test = relationship("LabTest")
     
     def __repr__(self):
         return f"<PrescriptionLabOrder(id={self.id}, test_name='{self.test_name}')>"

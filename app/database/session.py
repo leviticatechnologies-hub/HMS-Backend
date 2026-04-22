@@ -181,9 +181,8 @@ async def _tenant_has_core_lab_tables(db_name: str) -> bool:
             text(
                 """
                 SELECT
-                    to_regclass('public.lab_orders') IS NOT NULL
-                    AND to_regclass('public.lab_order_items') IS NOT NULL
-                    AND to_regclass('public.lab_samples') IS NOT NULL
+                    to_regclass('public.lab_equipment') IS NOT NULL
+                    AND to_regclass('public.equipment_maintenance_logs') IS NOT NULL
                 """
             )
         )

@@ -44,12 +44,21 @@ from app.models.pharmacy import (
     Sale, SaleItem, Return, ReturnItem, ExpiryAlert
 )
 
-# Import lab models
-from app.models.lab import (
-    LabTest, LabOrder, LabOrderItem, Sample, SampleOrderItem,
-    TestResult, ResultValue, LabReport, Equipment, EquipmentMaintenanceLog,
-    QCRule, QCRun, ReportShareToken, NotificationOutbox, ReportAccess,
-    LabAuditLog, ChainOfCustody, ComplianceExport
+from app.models.lab import Equipment, EquipmentMaintenanceLog
+from app.models.lab_portal import (
+    LabTestRegistration,
+    LabCriticalAlert,
+    LabSampleTracking,
+    LabReportRecord,
+    LabReportReadyTest,
+    LabResultAccessGrant,
+    LabResultAccessLog,
+    LabTestCategory,
+    LabCatalogueTest,
+    LabQcRun,
+    LabQcMaterial,
+    LabQcRule,
+    LabProfileConfig,
 )
 from app.models.prescription import PrescriptionMedicine
 from app.models.notifications import (
