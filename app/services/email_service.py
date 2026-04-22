@@ -30,6 +30,7 @@ class EmailService:
         self.smtp_user = settings.SMTP_USER
         self.smtp_pass = settings.SMTP_PASS
         self.email_from = settings.EMAIL_FROM
+        self.last_error: Optional[str] = None
         
         if not self.smtp_user or not self.smtp_pass:
             logger.warning("⚠️  SMTP credentials not configured")
@@ -52,10 +53,25 @@ class EmailService:
         else:
             # Port 587: STARTTLS
             return {"use_tls": False, "start_tls": True}
+
+    def _candidate_hosts(self) -> list[str]:
+        """
+        SMTP hosts to try in order.
+        - Keep configured host first.
+        - Auto-fallback to provider host based on SMTP username domain.
+        """
+        hosts = [self.smtp_host]
+        user = (self.smtp_user or "").strip().lower()
+        if user.endswith("@gmail.com") and "smtp.gmail.com" not in hosts:
+            hosts.append("smtp.gmail.com")
+        if (user.endswith("@outlook.com") or user.endswith("@hotmail.com")) and "smtp.office365.com" not in hosts:
+            hosts.append("smtp.office365.com")
+        return hosts
     
     async def _try_send_with_port(
         self,
         message,
+        host: str,
         port: int,
         timeout: int = 10
     ) -> tuple[bool, str]:
@@ -68,7 +84,7 @@ class EmailService:
             await asyncio.wait_for(
                 aiosmtplib.send(
                     message,
-                    hostname=self.smtp_host,
+                    hostname=host,
                     port=port,
                     use_tls=tls_settings["use_tls"],
                     start_tls=tls_settings["start_tls"],
@@ -97,10 +113,12 @@ class EmailService:
     ) -> bool:
         """Send email using configured SMTP."""
         try:
+            self.last_error = None
             logger.info(f"📧 Sending to {to_email}: {subject}")
             
             if not self.smtp_user or not self.smtp_pass:
                 logger.error("❌ SMTP credentials missing")
+                self.last_error = "SMTP credentials missing (SMTP_USER/SMTP_PASS)"
                 return False
             
             message = MIMEMultipart("alternative")
@@ -112,26 +130,34 @@ class EmailService:
                 message.attach(MIMEText(text_content, "plain"))
             message.attach(MIMEText(html_content, "html"))
             
-            # Try primary port
-            success, error = await self._try_send_with_port(message, self.smtp_port, timeout)
-            if success:
-                return True
-            
-            # Try fallback ports
-            logger.warning(f"⚠️  Port {self.smtp_port} failed, trying alternatives...")
-            for alt_port in self.SMTP_FALLBACK_PORTS:
-                if alt_port == self.smtp_port:
-                    continue
-                success, _ = await self._try_send_with_port(message, alt_port, timeout)
+            errors = []
+            for host in self._candidate_hosts():
+                logger.info("📡 Trying SMTP host: %s", host)
+                success, error = await self._try_send_with_port(message, host, self.smtp_port, timeout)
                 if success:
-                    logger.info(f"✅ Sent via fallback port {alt_port}")
                     return True
+                if error:
+                    errors.append(f"{host}:{self.smtp_port}: {error}")
+
+                logger.warning(f"⚠️  Port {self.smtp_port} failed on {host}, trying alternatives...")
+                for alt_port in self.SMTP_FALLBACK_PORTS:
+                    if alt_port == self.smtp_port:
+                        continue
+                    success, alt_error = await self._try_send_with_port(message, host, alt_port, timeout)
+                    if success:
+                        logger.info(f"✅ Sent via fallback host/port {host}:{alt_port}")
+                        return True
+                    if alt_error:
+                        errors.append(f"{host}:{alt_port}: {alt_error}")
             
             logger.error(f"❌ All ports failed for {to_email}")
+            if errors:
+                self.last_error = "; ".join(errors)[:800]
             return False
             
         except Exception as e:
             logger.error(f"❌ Send failed: {e}")
+            self.last_error = f"{type(e).__name__}: {e}"
             return False
 
     def is_smtp_configured(self) -> bool:
