@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.routers.lab.rbac import LAB_GET_ROLES
 from app.database.session import get_db_session
 from app.models.user import User
 from app.core.security import require_roles
@@ -62,17 +63,7 @@ async def get_equipment_list(
     category: Optional[EquipmentCategory] = Query(None),
     status: Optional[EquipmentStatus] = Query(None),
     active_only: bool = Query(True),
-    current_user: User = Depends(
-        require_roles(
-            [
-                "LAB_TECH",
-                "LAB_SUPERVISOR",
-                "LAB_ADMIN",
-                "HOSPITAL_ADMIN",
-                "PATHOLOGIST",
-            ]
-        )
-    ),
+    current_user: User = Depends(require_roles(LAB_GET_ROLES)),
     db: AsyncSession = Depends(get_db_session),
 ):
     try:
@@ -100,17 +91,7 @@ async def get_equipment_list(
 @router.get("/equipment/{equipment_id}", response_model=EquipmentResponse)
 async def get_equipment(
     equipment_id: uuid.UUID,
-    current_user: User = Depends(
-        require_roles(
-            [
-                "LAB_TECH",
-                "LAB_SUPERVISOR",
-                "LAB_ADMIN",
-                "HOSPITAL_ADMIN",
-                "PATHOLOGIST",
-            ]
-        )
-    ),
+    current_user: User = Depends(require_roles(LAB_GET_ROLES)),
     db: AsyncSession = Depends(get_db_session),
 ):
     try:
@@ -184,17 +165,7 @@ async def get_equipment_logs(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
     maintenance_type: Optional[MaintenanceType] = Query(None),
-    current_user: User = Depends(
-        require_roles(
-            [
-                "LAB_TECH",
-                "LAB_SUPERVISOR",
-                "LAB_ADMIN",
-                "HOSPITAL_ADMIN",
-                "PATHOLOGIST",
-            ]
-        )
-    ),
+    current_user: User = Depends(require_roles(LAB_GET_ROLES)),
     db: AsyncSession = Depends(get_db_session),
 ):
     try:
@@ -263,17 +234,7 @@ async def get_all_maintenance_logs(
     maintenance_type: Optional[MaintenanceType] = Query(None),
     date_from: Optional[datetime] = Query(None),
     date_to: Optional[datetime] = Query(None),
-    current_user: User = Depends(
-        require_roles(
-            [
-                "LAB_TECH",
-                "LAB_SUPERVISOR",
-                "LAB_ADMIN",
-                "HOSPITAL_ADMIN",
-                "PATHOLOGIST",
-            ]
-        )
-    ),
+    current_user: User = Depends(require_roles(LAB_GET_ROLES)),
     db: AsyncSession = Depends(get_db_session),
 ):
     try:
@@ -301,17 +262,7 @@ async def get_all_maintenance_logs(
 @router.get("/equipment/logs/{log_id}", response_model=MaintenanceLogResponse)
 async def get_maintenance_log(
     log_id: uuid.UUID,
-    current_user: User = Depends(
-        require_roles(
-            [
-                "LAB_TECH",
-                "LAB_SUPERVISOR",
-                "LAB_ADMIN",
-                "HOSPITAL_ADMIN",
-                "PATHOLOGIST",
-            ]
-        )
-    ),
+    current_user: User = Depends(require_roles(LAB_GET_ROLES)),
     db: AsyncSession = Depends(get_db_session),
 ):
     try:

@@ -4,6 +4,7 @@ Lab Profile endpoints.
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.routers.lab.rbac import LAB_GET_ROLES
 from app.core.security import require_roles
 from app.database.session import get_db_session
 from app.models.user import User
@@ -24,9 +25,7 @@ router = APIRouter(prefix="/lab/profile", tags=["Lab - Profile"])
 @router.get("", response_model=LabProfileResponse)
 async def get_lab_profile(
     demo: bool = Query(False),
-    current_user: User = Depends(
-        require_roles(["LAB_TECH", "LAB_SUPERVISOR", "LAB_ADMIN", "PATHOLOGIST", "HOSPITAL_ADMIN"])
-    ),
+    current_user: User = Depends(require_roles(LAB_GET_ROLES)),
     db: AsyncSession = Depends(get_db_session),
 ) -> LabProfileResponse:
     return await LabProfileService(db, current_user.hospital_id).get_profile(demo=demo)

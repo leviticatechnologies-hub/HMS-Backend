@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.routers.lab.rbac import LAB_GET_ROLES
 from app.core.security import require_roles
 from app.database.session import get_db_session
 from app.models.user import User
@@ -27,11 +28,7 @@ async def get_result_access_dashboard(
     demo: bool = Query(False, description="Return static UI-aligned sample data."),
     search: Optional[str] = Query(None),
     status: Optional[str] = Query(None, description="ACTIVE|EXPIRED|REVOKED"),
-    current_user: User = Depends(
-        require_roles(
-            ["LAB_TECH", "LAB_SUPERVISOR", "LAB_ADMIN", "PATHOLOGIST", "HOSPITAL_ADMIN"]
-        )
-    ),
+    current_user: User = Depends(require_roles(LAB_GET_ROLES)),
     db: AsyncSession = Depends(get_db_session),
 ) -> ResultAccessDashboardResponse:
     svc = LabResultAccessService(db, current_user.hospital_id)

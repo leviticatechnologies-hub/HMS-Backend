@@ -7,6 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.routers.lab.rbac import LAB_GET_ROLES
 from app.core.security import require_roles
 from app.database.session import get_db_session
 from app.models.user import User
@@ -33,17 +34,7 @@ async def get_critical_results_dashboard(
         None,
         description="Filter by patient, test name, or test id.",
     ),
-    current_user: User = Depends(
-        require_roles(
-            [
-                "LAB_TECH",
-                "LAB_SUPERVISOR",
-                "LAB_ADMIN",
-                "PATHOLOGIST",
-                "HOSPITAL_ADMIN",
-            ]
-        )
-    ),
+    current_user: User = Depends(require_roles(LAB_GET_ROLES)),
     db: AsyncSession = Depends(get_db_session),
 ) -> CriticalResultsDashboardResponse:
     svc = LabCriticalResultsService(db, current_user.hospital_id)
