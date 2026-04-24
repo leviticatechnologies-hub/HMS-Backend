@@ -22,7 +22,9 @@ from app.models.opd_management import (
     OpdVitalSign,
 )
 from app.models.patient import PatientProfile
-from app.models.user import User
+from app.models.user import Role, User
+from app.core.security import SecurityManager
+from app.core.enums import UserStatus
 
 
 def _today_window_utc() -> Tuple[datetime, datetime]:
@@ -162,6 +164,19 @@ class OpdManagementService:
         await self.db.refresh(visit)
         return self._visit_to_dict(visit)
 
+    async def create_token_from_modal(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        patient_ref = payload.get("patientId")
+        if not patient_ref:
+            raise HTTPException(status_code=400, detail={"code": "PATIENT_ID_REQUIRED", "message": "patientId is required"})
+        mapped = {
+            "patient_ref": patient_ref,
+            "visit_type": (payload.get("type") or "REGULAR").upper(),
+            "priority": (payload.get("priority") or "NORMAL").upper(),
+            "department_name": payload.get("department"),
+            "doctor_user_id": payload.get("doctorId"),
+        }
+        return await self.create_visit(mapped)
+
     async def list_visits(
         self,
         status_filter: Optional[str] = None,
@@ -180,6 +195,20 @@ class OpdManagementService:
         r = await self.db.execute(q)
         rows = r.scalars().all()
         return {"items": [self._visit_to_dict(v) for v in rows], "total": len(rows)}
+
+    async def list_tokens(self, limit: int = 100) -> Dict[str, Any]:
+        return await self.list_visits(limit=limit)
+
+    async def get_token_by_id(self, visit_id: uuid.UUID) -> Dict[str, Any]:
+        r = await self.db.execute(
+            select(OpdVisit).where(
+                and_(OpdVisit.id == visit_id, OpdVisit.hospital_id == self.hospital_id)
+            )
+        )
+        v = r.scalar_one_or_none()
+        if not v:
+            raise HTTPException(status_code=404, detail={"code": "TOKEN_NOT_FOUND", "message": "Token not found"})
+        return self._visit_to_dict(v)
 
     def _visit_to_dict(self, v: OpdVisit) -> Dict[str, Any]:
         return {
@@ -234,6 +263,9 @@ class OpdManagementService:
         await self.db.commit()
         return {"cancelled": True, "visit": out}
 
+    async def cancel_token(self, visit_id: uuid.UUID) -> Dict[str, Any]:
+        return await self.cancel_visit(visit_id)
+
     async def list_doctors(self) -> Dict[str, Any]:
         start, end = _today_window_utc()
         r = await self.db.execute(
@@ -280,6 +312,101 @@ class OpdManagementService:
                 }
             )
         return {"doctors": items, "total": len(items)}
+
+    async def create_doctor_modal(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        dept_name = (body.get("department") or "").strip()
+        if not dept_name:
+            raise HTTPException(status_code=400, detail="department is required")
+        dr = await self.db.execute(
+            select(Department).where(
+                Department.hospital_id == self.hospital_id,
+                func.lower(Department.name) == dept_name.lower(),
+            )
+        )
+        dept = dr.scalar_one_or_none()
+        if not dept:
+            raise HTTPException(status_code=404, detail="Department not found")
+
+        role_res = await self.db.execute(select(Role).where(Role.name == UserRole.DOCTOR.value))
+        doctor_role = role_res.scalar_one_or_none()
+        if not doctor_role:
+            raise HTTPException(status_code=500, detail="DOCTOR role not seeded")
+
+        raw_name = (body.get("name") or "").strip()
+        first_name, _, last_name = raw_name.partition(" ")
+        new_user = User(
+            id=uuid.uuid4(),
+            hospital_id=self.hospital_id,
+            email=(body.get("email") or "").strip().lower(),
+            phone=(body.get("contact") or "").strip(),
+            password_hash=SecurityManager.hash_password("Doctor@123"),
+            first_name=first_name or "Doctor",
+            last_name=last_name or "User",
+            status=UserStatus.ACTIVE.value if body.get("isActive", True) else UserStatus.BLOCKED.value,
+            roles=[doctor_role],
+            user_metadata={"opd_room": body.get("opdRoom")},
+        )
+        self.db.add(new_user)
+        await self.db.flush()
+        prof = DoctorProfile(
+            id=uuid.uuid4(),
+            hospital_id=self.hospital_id,
+            user_id=new_user.id,
+            department_id=dept.id,
+            doctor_id=f"DOC-{str(new_user.id)[:8]}",
+            medical_license_number=f"LIC-{str(new_user.id)[:10]}",
+            designation="Consultant",
+            specialization=(body.get("specialization") or "General"),
+            qualifications=[body.get("qualification")] if body.get("qualification") else [],
+            consultation_fee=Decimal("0"),
+            is_accepting_new_patients=True,
+        )
+        self.db.add(prof)
+        await self.db.commit()
+        return {"id": str(new_user.id), "name": raw_name, "department": dept.name, "isActive": body.get("isActive", True)}
+
+    async def update_doctor_modal(self, doctor_id: uuid.UUID, body: Dict[str, Any]) -> Dict[str, Any]:
+        r = await self.db.execute(
+            select(User).where(User.id == doctor_id, User.hospital_id == self.hospital_id)
+        )
+        u = r.scalar_one_or_none()
+        if not u:
+            raise HTTPException(status_code=404, detail="Doctor not found")
+        if body.get("name"):
+            parts = str(body["name"]).strip().split(" ", 1)
+            u.first_name = parts[0]
+            u.last_name = parts[1] if len(parts) > 1 else ""
+        if body.get("email"):
+            u.email = str(body["email"]).strip().lower()
+        if body.get("contact"):
+            u.phone = str(body["contact"]).strip()
+        if body.get("isActive") is not None:
+            u.status = UserStatus.ACTIVE.value if body["isActive"] else UserStatus.BLOCKED.value
+        md = dict(u.user_metadata or {})
+        if body.get("opdRoom") is not None:
+            md["opd_room"] = body["opdRoom"]
+            u.user_metadata = md
+        await self.db.commit()
+        return {"id": str(u.id), "isActive": u.status == UserStatus.ACTIVE.value}
+
+    async def set_doctor_status(self, doctor_id: uuid.UUID, is_active: bool) -> Dict[str, Any]:
+        return await self.update_doctor_modal(doctor_id, {"isActive": is_active})
+
+    async def deactivate_doctor_reassign(self, doctor_id: uuid.UUID, reassign_to_ids: List[uuid.UUID]) -> Dict[str, Any]:
+        await self.set_doctor_status(doctor_id, False)
+        if reassign_to_ids:
+            replacement = reassign_to_ids[0]
+            await self.db.execute(
+                OpdVisit.__table__.update()
+                .where(
+                    OpdVisit.hospital_id == self.hospital_id,
+                    OpdVisit.doctor_user_id == doctor_id,
+                    OpdVisit.status.in_(["WAITING", "IN_CONSULTATION"]),
+                )
+                .values(doctor_user_id=replacement)
+            )
+            await self.db.commit()
+        return {"doctorId": str(doctor_id), "reassigned_to": str(reassign_to_ids[0]) if reassign_to_ids else None}
 
     async def configure_opd_doctor(self, doctor_user_id: uuid.UUID, body: Dict[str, Any]) -> Dict[str, Any]:
         r = await self.db.execute(
@@ -388,6 +515,80 @@ class OpdManagementService:
             "message": "Consultation saved",
         }
 
+    async def start_consultation_modal(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        patient_key = payload.get("patientId")
+        doctor_id = payload.get("doctorId")
+        if not patient_key or not doctor_id:
+            raise HTTPException(status_code=400, detail="patientId and doctorId are required")
+        pp = await self._get_patient_profile(patient_key, None)
+        vr = await self.db.execute(
+            select(OpdVisit).where(
+                OpdVisit.hospital_id == self.hospital_id,
+                OpdVisit.patient_profile_id == pp.id,
+                OpdVisit.status.in_(["WAITING", "IN_CONSULTATION"]),
+            ).order_by(OpdVisit.created_at.desc())
+        )
+        visit = vr.scalars().first()
+        if not visit:
+            created = await self.create_visit({"patient_ref": patient_key, "doctor_user_id": doctor_id})
+            visit_id = uuid.UUID(created["id"])
+        else:
+            visit_id = visit.id
+        out = await self.create_consultation_with_vitals({
+            "opd_visit_id": visit_id,
+            "doctor_user_id": doctor_id,
+            "consultation_type": payload.get("consultationType", "NEW"),
+            "symptoms": payload.get("symptoms"),
+            "remarks": payload.get("history"),
+            "vitals": payload.get("vitalSigns") or {},
+        })
+        await self.update_visit_status(visit_id, "IN_CONSULTATION")
+        return out
+
+    async def complete_consultation_modal(self, consultation_id: uuid.UUID, payload: Dict[str, Any]) -> Dict[str, Any]:
+        r = await self.db.execute(
+            select(OpdConsultation).where(
+                OpdConsultation.id == consultation_id,
+                OpdConsultation.hospital_id == self.hospital_id,
+            )
+        )
+        c = r.scalar_one_or_none()
+        if not c:
+            raise HTTPException(status_code=404, detail="Consultation not found")
+        c.diagnosis = payload.get("diagnosis")
+        c.prescription = payload.get("prescription")
+        c.tests_recommended = payload.get("testsRecommended") or []
+        c.remarks = payload.get("remarks") or payload.get("instructions")
+        c.next_visit_date = payload.get("nextVisitDate")
+        await self.db.flush()
+        await self.update_visit_status(c.opd_visit_id, "COMPLETED")
+        await self.db.commit()
+        return {"consultation_id": str(c.id), "status": "COMPLETED"}
+
+    async def get_consultation_by_id(self, consultation_id: uuid.UUID) -> Dict[str, Any]:
+        r = await self.db.execute(
+            select(OpdConsultation).where(
+                OpdConsultation.id == consultation_id,
+                OpdConsultation.hospital_id == self.hospital_id,
+            )
+        )
+        c = r.scalar_one_or_none()
+        if not c:
+            raise HTTPException(status_code=404, detail="Consultation not found")
+        return {
+            "id": str(c.id),
+            "opd_visit_id": str(c.opd_visit_id),
+            "patient_id": str(c.patient_profile_id),
+            "doctor_id": str(c.doctor_user_id),
+            "consultationType": c.consultation_type,
+            "symptoms": c.symptoms,
+            "diagnosis": c.diagnosis,
+            "prescription": c.prescription,
+            "testsRecommended": c.tests_recommended or [],
+            "remarks": c.remarks,
+            "nextVisitDate": c.next_visit_date.isoformat() if c.next_visit_date else None,
+        }
+
     async def get_consultation_by_patient(self, patient_key: str) -> Dict[str, Any]:
         """patient_key: UUID of patient_profile or PAT-xxx ref."""
         q = select(PatientProfile).where(PatientProfile.hospital_id == self.hospital_id)
@@ -473,3 +674,47 @@ class OpdManagementService:
         self.db.add(tr)
         await self.db.commit()
         return {"message": "Patient transferred", "opd_visit_id": str(ov.id), "new_doctor_user_id": str(to_doc)}
+
+    async def transfer_modal(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        patient_key = body.get("patientId")
+        to_doc = body.get("toDoctorId")
+        if not patient_key or not to_doc:
+            raise HTTPException(status_code=400, detail="patientId and toDoctorId are required")
+        pp = await self._get_patient_profile(patient_key, None)
+        r = await self.db.execute(
+            select(OpdVisit).where(
+                OpdVisit.hospital_id == self.hospital_id,
+                OpdVisit.patient_profile_id == pp.id,
+            ).order_by(OpdVisit.created_at.desc())
+        )
+        v = r.scalars().first()
+        if not v:
+            raise HTTPException(status_code=404, detail="No OPD visit found for patient")
+        return await self.transfer_patient(
+            {"opd_visit_id": v.id, "to_doctor_user_id": to_doc, "reason": "Transferred from reception desk"}
+        )
+
+    async def dashboard_stats(self) -> Dict[str, Any]:
+        base = [OpdVisit.hospital_id == self.hospital_id, OpdVisit.is_active == True]
+        total = (await self.db.execute(select(func.count(OpdVisit.id)).where(*base))).scalar() or 0
+        waiting = (await self.db.execute(select(func.count(OpdVisit.id)).where(*base, OpdVisit.status == "WAITING"))).scalar() or 0
+        in_consultation = (await self.db.execute(select(func.count(OpdVisit.id)).where(*base, OpdVisit.status == "IN_CONSULTATION"))).scalar() or 0
+        completed = (await self.db.execute(select(func.count(OpdVisit.id)).where(*base, OpdVisit.status == "COMPLETED"))).scalar() or 0
+        active_doctors = (
+            await self.db.execute(
+                select(func.count(User.id))
+                .join(User.roles)
+                .where(
+                    User.hospital_id == self.hospital_id,
+                    Role.name == UserRole.DOCTOR.value,
+                    User.status == UserStatus.ACTIVE.value,
+                )
+            )
+        ).scalar() or 0
+        return {
+            "totalPatients": total,
+            "waiting": waiting,
+            "inConsultation": in_consultation,
+            "completed": completed,
+            "activeDoctors": active_doctors,
+        }
