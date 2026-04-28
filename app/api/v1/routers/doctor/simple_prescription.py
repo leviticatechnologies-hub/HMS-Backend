@@ -154,10 +154,12 @@ async def get_doctor_profile(user_context: dict, db: AsyncSession):
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied - Doctor role required"
         )
-    
+
+    doctor_user_id = uuid.UUID(user_context["user_id"])
+
     result = await db.execute(
         select(DoctorProfile)
-        .where(DoctorProfile.user_id == user_context["user_id"])
+        .where(DoctorProfile.user_id == doctor_user_id)
         .options(
             selectinload(DoctorProfile.user),
             selectinload(DoctorProfile.department)
@@ -171,7 +173,7 @@ async def get_doctor_profile(user_context: dict, db: AsyncSession):
         from app.models.hospital import StaffDepartmentAssignment
         
         doctor_result = await db.execute(
-            select(User).where(User.id == user_context["user_id"])
+            select(User).where(User.id == doctor_user_id)
         )
         doctor_user = doctor_result.scalar_one_or_none()
         
@@ -183,7 +185,7 @@ async def get_doctor_profile(user_context: dict, db: AsyncSession):
         
         assignment_result = await db.execute(
             select(StaffDepartmentAssignment)
-            .where(StaffDepartmentAssignment.staff_id == user_context["user_id"])
+            .where(StaffDepartmentAssignment.staff_id == doctor_user_id)
             .options(selectinload(StaffDepartmentAssignment.department))
         )
         assignment = assignment_result.scalar_one_or_none()

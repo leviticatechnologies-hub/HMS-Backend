@@ -802,18 +802,6 @@ class HospitalAdminService:
 
         department = department_for_create
 
-        if role_name in (UserRole.NURSE, UserRole.RECEPTIONIST) and not department_for_create:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={
-                    "code": "NO_DEPARTMENT",
-                    "message": (
-                        "No department found in this hospital. Create a department first, "
-                        "or pass department_name when adding a nurse or receptionist."
-                    ),
-                },
-            )
-
         joining_iso = _parse_joining_date_iso(staff_data.get("joining_date"))
         shift_type = _shift_type_from_timing(staff_data.get("shift_timing"))
         extra_md = dict(staff_data.get("metadata") or {})
@@ -834,6 +822,10 @@ class HospitalAdminService:
         if role_name == UserRole.NURSE:
             extra_md.setdefault("nurse_designation", "Staff Nurse")
             extra_md.setdefault("nurse_experience_years", 0)
+            if not department_for_create:
+                extra_md["department_assignment_pending"] = True
+        if role_name == UserRole.RECEPTIONIST and not department_for_create:
+            extra_md["department_assignment_pending"] = True
         if role_name == UserRole.LAB_TECH:
             extra_md.setdefault("lab_experience_years", 0)
         if role_name == UserRole.PHARMACIST:
@@ -1073,6 +1065,13 @@ class HospitalAdminService:
         elif role_name == UserRole.NURSE:
             staff_name = f"Nurse {staff_name}"
 
+        base_msg = f"{role_name.replace('_', ' ').title()} created successfully"
+        if extra_md.get("department_assignment_pending"):
+            base_msg += (
+                " No department exists yet — assign later via Edit staff (department_name) "
+                "once departments are created."
+            )
+
         out: Dict[str, Any] = {
             "user_id": resp_user_id,
             "staff_id": resp_staff_id,
@@ -1081,7 +1080,7 @@ class HospitalAdminService:
             "role": role_name,
             "joining_date": joining_iso,
             "profiles_created": profiles_created,
-            "message": f"{role_name.replace('_', ' ').title()} created successfully",
+            "message": base_msg,
         }
         if role_name == UserRole.DOCTOR:
             out["doctor_details"] = {
@@ -1580,9 +1579,42 @@ class HospitalAdminService:
                 )
             md["department_id"] = str(department.id)
             md["department_name"] = department.name
+            md.pop("department_assignment_pending", None)
             if nurse_profile:
                 nurse_profile.department_id = department.id
+            else:
+                nid = user.staff_id or f"NUR{str(uuid.uuid4())[:8].upper()}"
+                nlic = f"AUTO-NL-{uuid.uuid4().hex[:12]}".upper()
+                n_des = (md.get("nurse_designation") or "Staff Nurse").strip()
+                n_spec = (md.get("nurse_specialization") or "").strip() or None
+                ney_i = max(0, _safe_int(md.get("nurse_experience_years"), 0))
+                st = _shift_type_from_timing(md.get("shift_timing"))
+                self.db.add(
+                    NurseProfile(
+                        id=uuid.uuid4(),
+                        hospital_id=self.hospital_id,
+                        user_id=user.id,
+                        department_id=department.id,
+                        nurse_id=nid,
+                        nursing_license_number=nlic,
+                        designation=n_des,
+                        specialization=n_spec,
+                        experience_years=ney_i,
+                        shift_type=st,
+                    )
+                )
+                updated_fields.append("nurse_profile_created")
             updated_fields.append("department_name")
+            await self.db.flush()
+            profile_result = await self.db.execute(
+                select(NurseProfile).where(
+                    and_(
+                        NurseProfile.user_id == user.id,
+                        NurseProfile.hospital_id == self.hospital_id,
+                    )
+                )
+            )
+            nurse_profile = profile_result.scalar_one_or_none()
 
         if "nurse_specialization" in update_data:
             md["nurse_specialization"] = update_data["nurse_specialization"]
@@ -1642,9 +1674,45 @@ class HospitalAdminService:
                 )
             md["department_id"] = str(department.id)
             md["department_name"] = department.name
+            md.pop("department_assignment_pending", None)
             if receptionist_profile:
                 receptionist_profile.department_id = department.id
+            else:
+                rid = user.staff_id or f"RC{str(uuid.uuid4())[:8].upper()}"
+                eid = f"EMP-{uuid.uuid4().hex[:12].upper()}"
+                rw_area = (md.get("receptionist_work_area") or "OPD").strip()
+                try:
+                    rey_i = max(0, int(md.get("receptionist_experience_years", 0) or 0))
+                except (TypeError, ValueError):
+                    rey_i = 0
+                rdes = (md.get("receptionist_designation") or "Front Desk Receptionist").strip()
+                rst = _shift_type_from_timing(md.get("shift_timing"))
+                self.db.add(
+                    ReceptionistProfile(
+                        id=uuid.uuid4(),
+                        hospital_id=self.hospital_id,
+                        user_id=user.id,
+                        department_id=department.id,
+                        receptionist_id=rid,
+                        employee_id=eid,
+                        designation=rdes,
+                        work_area=rw_area,
+                        experience_years=rey_i,
+                        shift_type=rst,
+                    )
+                )
+                updated_fields.append("receptionist_profile_created")
             updated_fields.append("department_name")
+            await self.db.flush()
+            profile_result = await self.db.execute(
+                select(ReceptionistProfile).where(
+                    and_(
+                        ReceptionistProfile.user_id == user.id,
+                        ReceptionistProfile.hospital_id == self.hospital_id,
+                    )
+                )
+            )
+            receptionist_profile = profile_result.scalar_one_or_none()
 
         recv_fields = (
             "receptionist_work_area",
