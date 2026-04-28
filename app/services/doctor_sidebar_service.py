@@ -10,14 +10,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.doctor import DoctorProfile, Prescription, PrescriptionNotification
-from app.models.patient import Admission, MedicalRecord, PatientProfile
+from app.models.patient import Admission, Appointment, MedicalRecord, PatientProfile
 from app.models.telemedicine import TelemedNotification
 from app.models.user import User
 from app.core.enums import AdmissionType
 from app.schemas.doctor_sidebar import (
+    DoctorAppointmentOut,
     DoctorInpatientVisitOut,
     DoctorLabResultItemOut,
+    DoctorLabReviewRequest,
+    DoctorInpatientVitalsUpdate,
+    DoctorMessageCreateRequest,
     DoctorMessageOut,
+    DoctorPrescriptionCreateRequest,
     DoctorPrescriptionSummaryOut,
     DoctorProfileOut,
     DoctorProfileUpdate,
@@ -102,6 +107,116 @@ async def list_prescriptions_for_doctor(
     return out
 
 
+async def create_prescription_for_doctor(
+    db: AsyncSession,
+    user: User,
+    hospital_id: uuid.UUID,
+    payload: DoctorPrescriptionCreateRequest,
+) -> DoctorPrescriptionSummaryOut:
+    patient_ref = (payload.patient or "").strip()
+    if not patient_ref:
+        raise ValueError("patient is required")
+
+    pr = await db.execute(
+        select(PatientProfile)
+        .where(
+            and_(
+                PatientProfile.hospital_id == hospital_id,
+                PatientProfile.patient_id == patient_ref,
+            )
+        )
+        .options(selectinload(PatientProfile.user))
+    )
+    patient = pr.scalar_one_or_none()
+    if not patient:
+        raise ValueError("Patient not found")
+
+    doc_ids = await _prescription_doctor_ids(db, user, hospital_id)
+    doctor_fk = doc_ids[-1] if doc_ids else user.id
+    token = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    prescription_number = f"RX-{token}-{str(user.id).split('-')[0]}"
+    medication_item = {
+        "name": payload.medicine,
+        "dosage": payload.dosage,
+        "frequency": payload.frequency,
+        "duration": payload.duration,
+        "instructions": payload.instructions or "",
+    }
+
+    rec = Prescription(
+        id=uuid.uuid4(),
+        hospital_id=hospital_id,
+        patient_id=patient.id,
+        doctor_id=doctor_fk,
+        prescription_number=prescription_number,
+        prescription_date=payload.date,
+        medications=[medication_item],
+        general_instructions=payload.instructions,
+        diagnosis=None,
+        is_dispensed=False,
+    )
+    db.add(rec)
+    await db.commit()
+    await db.refresh(rec)
+
+    pname = ""
+    if patient.user:
+        pname = f"{patient.user.first_name} {patient.user.last_name}".strip()
+    return DoctorPrescriptionSummaryOut(
+        prescription_id=str(rec.id),
+        prescription_number=rec.prescription_number,
+        patient_ref=patient.patient_id or "",
+        patient_name=pname,
+        prescription_date=rec.prescription_date,
+        diagnosis=rec.diagnosis,
+        total_medicines=1,
+        is_dispensed=bool(rec.is_dispensed),
+        created_at=rec.created_at.isoformat() if rec.created_at else "",
+    )
+
+
+async def list_appointments_for_doctor(
+    db: AsyncSession,
+    user: User,
+    hospital_id: uuid.UUID,
+    limit: int = 100,
+) -> List[DoctorAppointmentOut]:
+    r = await db.execute(
+        select(Appointment)
+        .where(
+            and_(
+                Appointment.hospital_id == hospital_id,
+                Appointment.doctor_id == user.id,
+            )
+        )
+        .options(selectinload(Appointment.patient).selectinload(PatientProfile.user))
+        .order_by(desc(Appointment.created_at))
+        .limit(min(limit, 200))
+    )
+    rows = r.scalars().all()
+    out: List[DoctorAppointmentOut] = []
+    for a in rows:
+        patient = a.patient
+        pref = patient.patient_id if patient else ""
+        pname = ""
+        if patient and patient.user:
+            pname = f"{patient.user.first_name} {patient.user.last_name}".strip()
+        out.append(
+            DoctorAppointmentOut(
+                appointment_ref=a.appointment_ref,
+                patient_ref=pref or "",
+                patient_name=pname,
+                appointment_date=a.appointment_date,
+                appointment_time=a.appointment_time,
+                appointment_type=a.appointment_type,
+                status=a.status,
+                chief_complaint=a.chief_complaint,
+                notes=a.notes,
+            )
+        )
+    return out
+
+
 async def list_lab_results_for_doctor(
     db: AsyncSession,
     user: User,
@@ -144,6 +259,46 @@ async def list_lab_results_for_doctor(
         if len(out) >= limit:
             break
     return out
+
+
+async def review_lab_result_for_doctor(
+    db: AsyncSession,
+    user: User,
+    hospital_id: uuid.UUID,
+    medical_record_id: uuid.UUID,
+    payload: DoctorLabReviewRequest,
+) -> bool:
+    r = await db.execute(
+        select(MedicalRecord).where(
+            and_(
+                MedicalRecord.id == medical_record_id,
+                MedicalRecord.hospital_id == hospital_id,
+                MedicalRecord.doctor_id == user.id,
+            )
+        )
+    )
+    mr = r.scalar_one_or_none()
+    if not mr:
+        return False
+
+    now = datetime.now(timezone.utc).isoformat()
+    status = (payload.status or "REVIEWED").strip().upper()
+    orders = mr.lab_orders if isinstance(mr.lab_orders, list) else []
+    updated = []
+    for item in orders:
+        if isinstance(item, dict):
+            nxt = dict(item)
+            nxt["review_status"] = status
+            nxt["reviewed_at"] = now
+            nxt["reviewed_by"] = str(user.id)
+            if payload.notes:
+                nxt["review_notes"] = payload.notes
+            updated.append(nxt)
+        else:
+            updated.append(item)
+    mr.lab_orders = updated
+    await db.commit()
+    return True
 
 
 async def list_inpatient_visits_for_doctor(
@@ -197,6 +352,66 @@ async def list_inpatient_visits_for_doctor(
             )
         )
     return out
+
+
+async def update_inpatient_vitals_for_doctor(
+    db: AsyncSession,
+    user: User,
+    hospital_id: uuid.UUID,
+    admission_id: uuid.UUID,
+    vitals: DoctorInpatientVitalsUpdate,
+) -> bool:
+    ar = await db.execute(
+        select(Admission).where(
+            and_(
+                Admission.id == admission_id,
+                Admission.hospital_id == hospital_id,
+                Admission.doctor_id == user.id,
+            )
+        )
+    )
+    admission = ar.scalar_one_or_none()
+    if not admission:
+        return False
+
+    rr = await db.execute(
+        select(MedicalRecord)
+        .where(
+            and_(
+                MedicalRecord.hospital_id == hospital_id,
+                MedicalRecord.patient_id == admission.patient_id,
+                MedicalRecord.doctor_id == user.id,
+            )
+        )
+        .order_by(desc(MedicalRecord.created_at))
+        .limit(1)
+    )
+    record = rr.scalar_one_or_none()
+    if not record:
+        record = MedicalRecord(
+            id=uuid.uuid4(),
+            hospital_id=hospital_id,
+            patient_id=admission.patient_id,
+            doctor_id=user.id,
+            chief_complaint=admission.chief_complaint or "IPD Follow-up",
+            vital_signs={},
+        )
+        db.add(record)
+        await db.flush()
+
+    existing = record.vital_signs if isinstance(record.vital_signs, dict) else {}
+    existing.update(
+        {
+            "bloodPressure": vitals.bloodPressure,
+            "heartRate": vitals.heartRate,
+            "temperature": vitals.temperature,
+            "oxygenSaturation": vitals.oxygenSaturation,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    record.vital_signs = existing
+    await db.commit()
+    return True
 
 
 def _dt_iso(dt: Optional[datetime]) -> Optional[str]:
@@ -309,6 +524,35 @@ async def mark_message_read(
         await db.commit()
         return True
     return False
+
+
+async def create_message_for_doctor(
+    db: AsyncSession,
+    user: User,
+    hospital_id: uuid.UUID,
+    payload: DoctorMessageCreateRequest,
+) -> DoctorMessageOut:
+    rec = TelemedNotification(
+        id=uuid.uuid4(),
+        hospital_id=hospital_id,
+        recipient_user_id=uuid.UUID(payload.recipient_user_id),
+        session_id=None,
+        event_type=(payload.event_type or "NEW_MESSAGE").strip() or "NEW_MESSAGE",
+        title=payload.title,
+        body=payload.body,
+    )
+    db.add(rec)
+    await db.commit()
+    await db.refresh(rec)
+    return DoctorMessageOut(
+        id=str(rec.id),
+        source="telemed",
+        title=rec.title,
+        body=rec.body,
+        event_type=rec.event_type,
+        read_at=None,
+        created_at=rec.created_at.isoformat() if rec.created_at else "",
+    )
 
 
 def _doctor_profile_base_filter(user: User):

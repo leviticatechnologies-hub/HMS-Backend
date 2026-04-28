@@ -43,6 +43,40 @@ class DoctorInpatientVisitOut(BaseModel):
     is_active: bool
 
 
+class DoctorAppointmentOut(BaseModel):
+    appointment_ref: str
+    patient_ref: str
+    patient_name: str
+    appointment_date: str
+    appointment_time: str
+    appointment_type: Optional[str] = None
+    status: str
+    chief_complaint: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class DoctorPrescriptionCreateRequest(BaseModel):
+    patient: str
+    medicine: str
+    dosage: str
+    frequency: str
+    duration: str
+    instructions: Optional[str] = None
+    date: str
+
+
+class DoctorLabReviewRequest(BaseModel):
+    status: str = Field(default="REVIEWED", description="REVIEWED or CRITICAL")
+    notes: Optional[str] = None
+
+
+class DoctorInpatientVitalsUpdate(BaseModel):
+    bloodPressure: Optional[str] = None
+    heartRate: Optional[str] = None
+    temperature: Optional[str] = None
+    oxygenSaturation: Optional[str] = None
+
+
 class DoctorMessageOut(BaseModel):
     id: str
     source: Literal["telemed", "prescription"]
@@ -55,8 +89,14 @@ class DoctorMessageOut(BaseModel):
 
 class DoctorMessageReadRequest(BaseModel):
     source: Literal["telemed", "prescription"]
-    message_id: UUID
     message_id: str
+
+
+class DoctorMessageCreateRequest(BaseModel):
+    recipient_user_id: str
+    title: str
+    body: str
+    event_type: str = "NEW_MESSAGE"
 
 
 class DoctorProfileOut(BaseModel):
