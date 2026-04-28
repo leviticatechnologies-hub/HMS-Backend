@@ -44,6 +44,14 @@ async def _prescription_doctor_ids(db: AsyncSession, user: User, hospital_id: uu
     return ids
 
 
+async def _doctor_scope_ids(db: AsyncSession, user: User, hospital_id: uuid.UUID) -> List[uuid.UUID]:
+    """
+    Some environments contain legacy rows with doctor_profile.id while
+    newer rows use users.id. Return both IDs for robust doctor scoping.
+    """
+    return await _prescription_doctor_ids(db, user, hospital_id)
+
+
 async def list_prescriptions_for_doctor(
     db: AsyncSession,
     user: User,
@@ -181,12 +189,13 @@ async def list_appointments_for_doctor(
     hospital_id: uuid.UUID,
     limit: int = 100,
 ) -> List[DoctorAppointmentOut]:
+    scope_ids = await _doctor_scope_ids(db, user, hospital_id)
     r = await db.execute(
         select(Appointment)
         .where(
             and_(
                 Appointment.hospital_id == hospital_id,
-                Appointment.doctor_id == user.id,
+                Appointment.doctor_id.in_(scope_ids),
             )
         )
         .options(selectinload(Appointment.patient).selectinload(PatientProfile.user))
@@ -223,12 +232,13 @@ async def list_lab_results_for_doctor(
     hospital_id: uuid.UUID,
     limit: int = 50,
 ) -> List[DoctorLabResultItemOut]:
+    scope_ids = await _doctor_scope_ids(db, user, hospital_id)
     result = await db.execute(
         select(MedicalRecord)
         .where(
             and_(
                 MedicalRecord.hospital_id == hospital_id,
-                MedicalRecord.doctor_id == user.id,
+                MedicalRecord.doctor_id.in_(scope_ids),
             )
         )
         .options(selectinload(MedicalRecord.patient).selectinload(PatientProfile.user))
@@ -268,12 +278,13 @@ async def review_lab_result_for_doctor(
     medical_record_id: uuid.UUID,
     payload: DoctorLabReviewRequest,
 ) -> bool:
+    scope_ids = await _doctor_scope_ids(db, user, hospital_id)
     r = await db.execute(
         select(MedicalRecord).where(
             and_(
                 MedicalRecord.id == medical_record_id,
                 MedicalRecord.hospital_id == hospital_id,
-                MedicalRecord.doctor_id == user.id,
+                MedicalRecord.doctor_id.in_(scope_ids),
             )
         )
     )
@@ -308,9 +319,10 @@ async def list_inpatient_visits_for_doctor(
     active_only: bool = False,
     limit: int = 100,
 ) -> List[DoctorInpatientVisitOut]:
+    scope_ids = await _doctor_scope_ids(db, user, hospital_id)
     conditions = [
         Admission.hospital_id == hospital_id,
-        Admission.doctor_id == user.id,
+        Admission.doctor_id.in_(scope_ids),
         Admission.admission_type == AdmissionType.IPD.value,
     ]
     if active_only:
@@ -361,12 +373,13 @@ async def update_inpatient_vitals_for_doctor(
     admission_id: uuid.UUID,
     vitals: DoctorInpatientVitalsUpdate,
 ) -> bool:
+    scope_ids = await _doctor_scope_ids(db, user, hospital_id)
     ar = await db.execute(
         select(Admission).where(
             and_(
                 Admission.id == admission_id,
                 Admission.hospital_id == hospital_id,
-                Admission.doctor_id == user.id,
+                Admission.doctor_id.in_(scope_ids),
             )
         )
     )
@@ -380,7 +393,7 @@ async def update_inpatient_vitals_for_doctor(
             and_(
                 MedicalRecord.hospital_id == hospital_id,
                 MedicalRecord.patient_id == admission.patient_id,
-                MedicalRecord.doctor_id == user.id,
+                MedicalRecord.doctor_id.in_(scope_ids),
             )
         )
         .order_by(desc(MedicalRecord.created_at))
