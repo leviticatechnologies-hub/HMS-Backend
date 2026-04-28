@@ -86,6 +86,7 @@ try:
     from app.api.v1.routers.doctor.doctor_reports_analytics import router as doctor_reports_router
     from app.api.v1.routers.doctor.doctor_treatment_plans import router as doctor_treatment_router
     from app.api.v1.routers.doctor.simple_prescription import router as simple_prescription_router
+    from app.api.v1.routers.doctor.doctor_sidebar import router as doctor_sidebar_router
     
     api_router.include_router(doctor_dashboard_router)
     api_router.include_router(doctor_management_router)
@@ -94,7 +95,8 @@ try:
     api_router.include_router(doctor_reports_router)
     api_router.include_router(doctor_treatment_router)
     api_router.include_router(simple_prescription_router)
-    logger.info("✓ Doctor routers loaded (prescription: simple-prescription only)")
+    api_router.include_router(doctor_sidebar_router)
+    logger.info("✓ Doctor routers loaded (sidebar + simple-prescription)")
 except ImportError as e:
     logger.error(f"✗ Failed to load doctor routers: {e}")
 
