@@ -7,22 +7,26 @@ from pydantic import Field, model_validator, field_validator
 from typing import Optional
 import os
 import logging
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote_plus
 from pathlib import Path
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
-# Force load .env for local development
+# Force load env file for local development
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 ENV_FILE = BASE_DIR / ".env"
+ALT_ENV_FILE = BASE_DIR / "env"
 
 if os.getenv("RENDER", "").lower() not in {"true", "1"}:
     if ENV_FILE.exists():
         load_dotenv(dotenv_path=ENV_FILE, override=True)
         logger.info(f"✓ Loaded .env from {ENV_FILE}")
+    elif ALT_ENV_FILE.exists():
+        load_dotenv(dotenv_path=ALT_ENV_FILE, override=True)
+        logger.info(f"✓ Loaded env file from {ALT_ENV_FILE}")
     else:
-        logger.warning(f"✗ .env not found at {ENV_FILE}")
+        logger.warning(f"✗ .env not found at {ENV_FILE} (and no fallback env file)")
 else:
     logger.info("Running in Render - using environment variables")
 
@@ -193,7 +197,14 @@ class Settings(BaseSettings):
         sync_url = (self.DATABASE_URL_SYNC or "").strip()
 
         if not async_url and not sync_url:
-            raise ValueError("Set DATABASE_URL and/or DATABASE_URL_SYNC in environment variables")
+            # Build from DB_* so local runs work without DATABASE_URL in .env (defaults match Field defaults).
+            u = quote_plus(self.DB_USER or "")
+            p = quote_plus(self.DB_PASSWORD or "")
+            host = self.DB_HOST or "localhost"
+            port = int(self.DB_PORT) if self.DB_PORT else 5432
+            dbn = (self.DB_NAME or "postgres").strip() or "postgres"
+            sync_url = f"postgresql://{u}:{p}@{host}:{port}/{dbn}"
+            async_url = f"postgresql+asyncpg://{u}:{p}@{host}:{port}/{dbn}"
 
         if async_url and not sync_url:
             sync_url = self._to_sync_url(async_url)
