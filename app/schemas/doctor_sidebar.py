@@ -62,24 +62,60 @@ class DoctorMessageReadRequest(BaseModel):
 class DoctorProfileOut(BaseModel):
     user_id: str
     doctor_profile_id: str
+    hospital_id: Optional[str] = None
     email: str
     phone: str
     first_name: str
     last_name: str
+    middle_name: Optional[str] = None
     staff_id: Optional[str] = None
+    status: Optional[str] = None
+    email_verified: bool = False
+    phone_verified: bool = False
+    avatar_url: Optional[str] = None
+    timezone: Optional[str] = None
+    language: Optional[str] = None
+    user_metadata: Any = Field(default_factory=dict)
+    doctor_id: Optional[str] = None
+    medical_license_number: Optional[str] = None
+    department_id: Optional[str] = None
     department: Optional[str] = None
     specialization: Optional[str] = None
+    sub_specialization: Optional[str] = None
     designation: Optional[str] = None
+    experience_years: Optional[int] = None
     qualifications: List[Any] = Field(default_factory=list)
+    certifications: List[Any] = Field(default_factory=list)
+    medical_associations: List[Any] = Field(default_factory=list)
     consultation_fee: Optional[float] = None
+    follow_up_fee: Optional[float] = None
+    consultation_type: Optional[str] = None
     availability_time: Optional[str] = None
+    is_available_for_emergency: Optional[bool] = None
+    is_accepting_new_patients: Optional[bool] = None
+    languages_spoken: List[Any] = Field(default_factory=list)
     bio: Optional[str] = None
-    avatar_url: Optional[str] = None
 
 
 class DoctorProfileUpdate(BaseModel):
     phone: Optional[str] = Field(None, max_length=20)
     first_name: Optional[str] = Field(None, max_length=100)
     last_name: Optional[str] = Field(None, max_length=100)
+    middle_name: Optional[str] = Field(None, max_length=100)
     bio: Optional[str] = None
     avatar_url: Optional[str] = Field(None, max_length=500)
+    timezone: Optional[str] = Field(None, max_length=50)
+    language: Optional[str] = Field(None, max_length=10)
+    specialization: Optional[str] = Field(None, max_length=255)
+    sub_specialization: Optional[str] = Field(None, max_length=255)
+    designation: Optional[str] = Field(None, max_length=100)
+    availability_time: Optional[str] = None
+    consultation_type: Optional[str] = Field(None, max_length=100)
+    consultation_fee: Optional[float] = None
+    follow_up_fee: Optional[float] = None
+    is_available_for_emergency: Optional[bool] = None
+    is_accepting_new_patients: Optional[bool] = None
+    qualifications: Optional[List[Any]] = None
+    certifications: Optional[List[Any]] = None
+    medical_associations: Optional[List[Any]] = None
+    languages_spoken: Optional[List[Any]] = None

@@ -352,23 +352,47 @@ async def get_doctor_sidebar_profile(db: AsyncSession, user: User) -> Optional[D
     u = dp.user
     dept_name = dp.department.name if dp.department else None
     quals = dp.qualifications if isinstance(dp.qualifications, list) else []
+    certs = dp.certifications if isinstance(dp.certifications, list) else []
+    assocs = dp.medical_associations if isinstance(dp.medical_associations, list) else []
+    langs = dp.languages_spoken if isinstance(dp.languages_spoken, list) else []
     fee = float(dp.consultation_fee) if dp.consultation_fee is not None else None
+    follow_fee = float(dp.follow_up_fee) if dp.follow_up_fee is not None else None
     return DoctorProfileOut(
         user_id=str(user.id),
         doctor_profile_id=str(dp.id),
+        hospital_id=str(user.hospital_id) if user.hospital_id else None,
         email=u.email if u else user.email,
         phone=u.phone if u else user.phone,
         first_name=u.first_name if u else user.first_name,
         last_name=u.last_name if u else user.last_name,
+        middle_name=u.middle_name if u else user.middle_name,
         staff_id=u.staff_id if u else user.staff_id,
+        status=u.status if u else user.status,
+        email_verified=bool(u.email_verified if u else user.email_verified),
+        phone_verified=bool(u.phone_verified if u else user.phone_verified),
+        avatar_url=u.avatar_url if u else user.avatar_url,
+        timezone=u.timezone if u else user.timezone,
+        language=u.language if u else user.language,
+        user_metadata=dict(u.user_metadata) if (u and isinstance(u.user_metadata, dict)) else (dict(user.user_metadata) if isinstance(user.user_metadata, dict) else {}),
+        doctor_id=dp.doctor_id,
+        medical_license_number=dp.medical_license_number,
+        department_id=str(dp.department_id) if dp.department_id else None,
         department=dept_name,
         specialization=dp.specialization,
+        sub_specialization=dp.sub_specialization,
         designation=dp.designation,
+        experience_years=dp.experience_years,
         qualifications=list(quals),
+        certifications=list(certs),
+        medical_associations=list(assocs),
         consultation_fee=fee,
+        follow_up_fee=follow_fee,
+        consultation_type=dp.consultation_type,
         availability_time=dp.availability_time,
+        is_available_for_emergency=bool(dp.is_available_for_emergency),
+        is_accepting_new_patients=bool(dp.is_accepting_new_patients),
+        languages_spoken=list(langs),
         bio=dp.bio,
-        avatar_url=u.avatar_url if u else user.avatar_url,
     )
 
 
@@ -396,10 +420,42 @@ async def update_doctor_sidebar_profile(
         u.first_name = payload.first_name
     if payload.last_name is not None:
         u.last_name = payload.last_name
+    if payload.middle_name is not None:
+        u.middle_name = payload.middle_name
     if payload.avatar_url is not None:
         u.avatar_url = payload.avatar_url
+    if payload.timezone is not None:
+        u.timezone = payload.timezone
+    if payload.language is not None:
+        u.language = payload.language
     if payload.bio is not None:
         dp.bio = payload.bio
+    if payload.specialization is not None:
+        dp.specialization = payload.specialization
+    if payload.sub_specialization is not None:
+        dp.sub_specialization = payload.sub_specialization
+    if payload.designation is not None:
+        dp.designation = payload.designation
+    if payload.availability_time is not None:
+        dp.availability_time = payload.availability_time
+    if payload.consultation_type is not None:
+        dp.consultation_type = payload.consultation_type
+    if payload.consultation_fee is not None:
+        dp.consultation_fee = payload.consultation_fee
+    if payload.follow_up_fee is not None:
+        dp.follow_up_fee = payload.follow_up_fee
+    if payload.is_available_for_emergency is not None:
+        dp.is_available_for_emergency = payload.is_available_for_emergency
+    if payload.is_accepting_new_patients is not None:
+        dp.is_accepting_new_patients = payload.is_accepting_new_patients
+    if payload.qualifications is not None:
+        dp.qualifications = payload.qualifications
+    if payload.certifications is not None:
+        dp.certifications = payload.certifications
+    if payload.medical_associations is not None:
+        dp.medical_associations = payload.medical_associations
+    if payload.languages_spoken is not None:
+        dp.languages_spoken = payload.languages_spoken
 
     await db.commit()
     await db.refresh(dp)
