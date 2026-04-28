@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, List, Literal, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -54,6 +55,7 @@ class DoctorMessageOut(BaseModel):
 
 class DoctorMessageReadRequest(BaseModel):
     source: Literal["telemed", "prescription"]
+    message_id: UUID
     message_id: str
 
 

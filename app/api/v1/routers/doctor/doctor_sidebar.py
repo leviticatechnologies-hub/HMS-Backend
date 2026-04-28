@@ -118,6 +118,7 @@ async def sidebar_mark_message_read(
     db: AsyncSession = Depends(get_db_session),
 ):
     hid = uuid.UUID(ctx["hospital_id"])
+    ok = await sidebar_svc.mark_message_read(db, user, hid, body.source, body.message_id)
     mid = uuid.UUID(body.message_id)
     ok = await sidebar_svc.mark_message_read(db, user, hid, body.source, mid)
     if not ok:
@@ -136,6 +137,12 @@ async def sidebar_get_profile(
 ):
     out = await sidebar_svc.get_doctor_sidebar_profile(db, user)
     if not out:
+        await sidebar_svc.ensure_doctor_profile_row(db, user)
+        out = await sidebar_svc.get_doctor_sidebar_profile(db, user)
+    if not out:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Doctor profile not found. Ensure the account is assigned to a department, or contact admin.",
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Doctor profile not found for this account.",
@@ -156,6 +163,12 @@ async def sidebar_patch_profile(
 ):
     out = await sidebar_svc.update_doctor_sidebar_profile(db, user, payload)
     if not out:
+        await sidebar_svc.ensure_doctor_profile_row(db, user)
+        out = await sidebar_svc.update_doctor_sidebar_profile(db, user, payload)
+    if not out:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Doctor profile not found. Ensure the account is assigned to a department, or contact admin.",
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Doctor profile not found for this account.",

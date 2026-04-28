@@ -312,6 +312,28 @@ async def mark_message_read(
 
 
 def _doctor_profile_base_filter(user: User):
+    """One doctor_profiles row per user (unique user_id); do not filter hospital — avoids false 404."""
+    return DoctorProfile.user_id == user.id
+
+
+async def ensure_doctor_profile_row(db: AsyncSession, user: User) -> None:
+    """
+    Ensure doctor_profiles exists — same bootstrap as `/simple-prescription` (department assignment required).
+    Call before profile GET/PATCH when no row yet.
+    """
+    from app.api.v1.routers.doctor.simple_prescription import get_doctor_profile
+    from app.core.enums import UserRole
+
+    user_roles = [r.name for r in user.roles] if user.roles else []
+    if UserRole.DOCTOR.value not in user_roles:
+        return
+    user_context = {
+        "user_id": str(user.id),
+        "hospital_id": str(user.hospital_id) if user.hospital_id else None,
+        "role": UserRole.DOCTOR.value,
+        "all_roles": user_roles,
+    }
+    await get_doctor_profile(user_context, db)
     q = DoctorProfile.user_id == user.id
     if user.hospital_id is not None:
         q = and_(q, DoctorProfile.hospital_id == user.hospital_id)
