@@ -334,6 +334,10 @@ async def ensure_doctor_profile_row(db: AsyncSession, user: User) -> None:
         "all_roles": user_roles,
     }
     await get_doctor_profile(user_context, db)
+    q = DoctorProfile.user_id == user.id
+    if user.hospital_id is not None:
+        q = and_(q, DoctorProfile.hospital_id == user.hospital_id)
+    return q
 
 
 async def get_doctor_sidebar_profile(db: AsyncSession, user: User) -> Optional[DoctorProfileOut]:
