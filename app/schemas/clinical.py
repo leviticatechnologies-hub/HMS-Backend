@@ -2,7 +2,7 @@
 Clinical operations schemas for OPD, IPD, and nursing management.
 """
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, EmailStr, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, EmailStr, field_validator, model_validator
 
 
 # ============================================================================
@@ -11,11 +11,13 @@ from pydantic import BaseModel, Field, EmailStr, field_validator, model_validato
 
 class PatientRegistrationCreate(BaseModel):
     """Register new patient for OPD (receptionist). Insurance fields are not collected here."""
-    first_name: str
-    last_name: str
+    model_config = ConfigDict(populate_by_name=True)
+
+    first_name: str = Field(validation_alias=AliasChoices("first_name", "firstName"))
+    last_name: str = Field(validation_alias=AliasChoices("last_name", "lastName"))
     phone: str
     email: Optional[EmailStr] = None
-    date_of_birth: str  # YYYY-MM-DD
+    date_of_birth: str = Field(validation_alias=AliasChoices("date_of_birth", "dob"))  # YYYY-MM-DD
     gender: str  # MALE, FEMALE, OTHER (or Male / Female / Other — normalized server-side)
     address: Optional[str] = None
     pincode: Optional[str] = None
@@ -25,26 +27,44 @@ class PatientRegistrationCreate(BaseModel):
     country: Optional[str] = None
     id_type: Optional[str] = Field(
         default=None,
+        validation_alias=AliasChoices("id_type", "idType"),
         description="e.g. Aadhaar Card, Passport, Other",
     )
-    id_number: Optional[str] = Field(default=None, description="ID document number when applicable")
+    id_number: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("id_number", "idNumber"),
+        description="ID document number when applicable",
+    )
     id_name: Optional[str] = Field(
         default=None,
+        validation_alias=AliasChoices("id_name", "idName"),
         description="Name or label on ID when id_type is Other",
     )
-    emergency_contact_name: Optional[str] = None
-    emergency_contact_phone: Optional[str] = None
-    emergency_contact_relation: Optional[str] = None
+    emergency_contact_name: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("emergency_contact_name", "emergencyContactName"),
+    )
+    emergency_contact_phone: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("emergency_contact_phone", "emergencyContact"),
+    )
+    emergency_contact_relation: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("emergency_contact_relation", "emergencyContactRelationship"),
+    )
     medical_history: Optional[str] = Field(
         default=None,
+        validation_alias=AliasChoices("medical_history", "medicalHistory"),
         description="Known conditions, allergies, medications (free text)",
     )
     blood_group: Optional[str] = Field(
         default=None,
+        validation_alias=AliasChoices("blood_group", "bloodGroup"),
         description="A+, A-, B+, B-, AB+, AB-, O+, O-, OTHER",
     )
     blood_group_value: Optional[str] = Field(
         default=None,
+        validation_alias=AliasChoices("blood_group_value", "bloodGroupValue"),
         description="Required when blood_group is OTHER — specify the group",
     )
     password: Optional[str] = Field(
@@ -76,6 +96,56 @@ class PatientRegistrationCreate(BaseModel):
         if bg == "OTHER" and not (self.blood_group_value or "").strip():
             raise ValueError("blood_group_value is required when blood_group is OTHER")
         return self
+
+    @field_validator("gender", mode="after")
+    @classmethod
+    def validate_gender(cls, v: str) -> str:
+        val = (v or "").strip().upper()
+        allowed = {"MALE", "FEMALE", "OTHER"}
+        if val not in allowed:
+            raise ValueError("gender must be one of: Male, Female, Other")
+        return val
+
+    @field_validator("id_type", mode="after")
+    @classmethod
+    def validate_id_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        raw = v.strip()
+        if not raw:
+            return None
+        canon = {
+            "AADHAAR CARD": "Aadhaar Card",
+            "AADHAR CARD": "Aadhaar Card",
+            "PASSPORT": "Passport",
+            "OTHER": "Other",
+            "OTHERS": "Other",
+        }
+        key = raw.upper()
+        if key not in canon:
+            raise ValueError("idType must be one of: Aadhaar Card, Passport, Other")
+        return canon[key]
+
+    @model_validator(mode="after")
+    def id_type_other_requires_id_name(self):
+        idt = (self.id_type or "").strip().upper()
+        if idt == "OTHER" and not (self.id_name or "").strip():
+            raise ValueError("idName is required when idType is Other")
+        return self
+
+    @field_validator("blood_group", mode="after")
+    @classmethod
+    def validate_blood_group(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        raw = v.strip()
+        if not raw:
+            return None
+        normalized = raw.upper().replace(" ", "")
+        allowed = {"A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-", "OTHER"}
+        if normalized not in allowed:
+            raise ValueError("bloodGroup must be one of: A+, A-, B+, B-, O+, O-, AB+, AB-, Other")
+        return normalized
 
     send_credentials_email: bool = Field(
         default=True,
