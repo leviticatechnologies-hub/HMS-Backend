@@ -358,19 +358,28 @@ class ClinicalService:
         self.db.add(user)
         await self.db.flush()  # Flush to get the user ID
         
-        # Assign PATIENT role using the association table
-        patient_role = await self.db.execute(
-            select(Role).where(Role.name == UserRole.PATIENT)
+        # Assign PATIENT role (must succeed or patient portal login fails with AUTH_002).
+        role_result = await self.db.execute(
+            select(Role).where(Role.name == UserRole.PATIENT.value)
         )
-        role = patient_role.scalar_one_or_none()
-        if role:
-            # Use the association table directly instead of the relationship
-            await self.db.execute(
-                user_roles.insert().values(
-                    user_id=user.id,
-                    role_id=role.id
-                )
+        role = role_result.scalar_one_or_none()
+        if not role:
+            role = Role(
+                id=uuid.uuid4(),
+                name=UserRole.PATIENT.value,
+                display_name="Patient",
+                description="Patient Role",
+                level=10,
             )
+            self.db.add(role)
+            await self.db.flush()
+
+        await self.db.execute(
+            user_roles.insert().values(
+                user_id=user.id,
+                role_id=role.id,
+            )
+        )
         
         bg_raw = _normalize_opd_blood_group(patient_data.get("blood_group"))
         bg_val = (patient_data.get("blood_group_value") or "").strip() or None

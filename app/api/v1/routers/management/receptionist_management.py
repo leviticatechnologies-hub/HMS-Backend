@@ -146,45 +146,30 @@ async def register_patient(
 
     pwd = (patient_data.password or "").strip() or None
     email = (str(patient_data.email).strip().lower() if patient_data.email else None)
+    # Always queue portal credential email in background — SMTP can take several seconds and blocked registration UX.
     if pwd and email and patient_data.send_credentials_email:
         es = EmailService()
         if not es.is_smtp_configured():
             result["credentials_email_sent"] = False
             result["credentials_email_queued"] = False
             result["credentials_email_hint"] = (
-                "SMTP is not configured (set SMTP_USER and SMTP_PASS). "
-                "Share credentials manually or configure SMTP and retry."
+                "SMTP is not configured on the server (set SMTP_USER and SMTP_PASS in Render/environment). "
+                "Share login email and password with the patient manually."
             )
         else:
-            sent_now = await es.send_patient_portal_credentials_email(
-                to_email=email,
-                first_name=patient_data.first_name,
-                login_email=email,
-                password_plain=pwd,
-                hospital_name=result.get("hospital_name"),
+            background_tasks.add_task(
+                send_opd_portal_credentials_email_task,
+                email,
+                patient_data.first_name,
+                pwd,
+                result.get("hospital_name"),
             )
-            result["credentials_email_sent"] = bool(sent_now)
-            result["credentials_email_queued"] = False
-            if sent_now:
-                result["credentials_email_hint"] = "Credentials email sent successfully."
-            else:
-                # Fallback to background retry so transient SMTP issues self-heal.
-                err = (getattr(es, "last_error", None) or "").strip()
-                background_tasks.add_task(
-                    send_opd_portal_credentials_email_task,
-                    email,
-                    patient_data.first_name,
-                    pwd,
-                    result.get("hospital_name"),
-                )
-                result["credentials_email_queued"] = True
-                result["credentials_email_hint"] = (
-                    "Immediate email send failed; queued background retry. "
-                    "If it still fails, verify SMTP host/credentials."
-                )
-                if err:
-                    result["credentials_email_error"] = err
-                logger.warning("Immediate portal credentials email failed for %s; queued retry", email)
+            result["credentials_email_sent"] = False
+            result["credentials_email_queued"] = True
+            result["credentials_email_hint"] = (
+                "Credentials email queued to send shortly. Check inbox/spam; "
+                "if nothing arrives, verify SMTP_HOST/SMTP_USER/SMTP_PASS on the deployment."
+            )
 
     return success_response(message="Patient registered successfully", data=result)
 
