@@ -2,6 +2,12 @@
 Receptionist Management API
 Dedicated receptionist functionality for front desk operations, patient registration, and appointment management.
 
+DATABASE NOTE (patient portal login):
+Patient auth (`POST /api/v1/auth/patient/login`) always loads `users` from the **platform** DB (`get_platform_db_session`).
+This router therefore uses `get_platform_db_session` for all endpoints—not `get_db_session`—so OPD-registered patients
+and their `user_roles` rows exist where login reads them. Using tenant-routed sessions here caused “Invalid credentials”
+(AUTH_001) because users were written to the tenant DB only.
+
 BUSINESS RULES:
 - Receptionists are created by Hospital Admin only
 - Receptionists belong to one hospital AND one department
@@ -18,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import require_receptionist
-from app.core.database import get_db_session
+from app.core.database import get_platform_db_session
 from app.core.security import get_current_user
 from app.core.utils import absolute_public_asset_url
 from app.models.hospital import Department
@@ -89,7 +95,7 @@ def _receptionist_profile_base_dict(current_user: User) -> dict:
 @router.get("/dashboard")
 async def get_receptionist_dashboard(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session)
+    db: AsyncSession = Depends(get_platform_db_session)
 ):
     """
     Get receptionist dashboard with key metrics and information.
@@ -120,7 +126,7 @@ async def register_patient(
     patient_data: PatientRegistrationCreate,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session)
+    db: AsyncSession = Depends(get_platform_db_session)
 ):
     """
     Register new patient for OPD services.
@@ -182,7 +188,7 @@ async def register_patient(
 async def schedule_appointment(
     appointment_data: AppointmentSchedulingCreate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session)
+    db: AsyncSession = Depends(get_platform_db_session)
 ):
     """
     Schedule appointment for an existing patient.
@@ -217,7 +223,7 @@ async def get_todays_appointments(
     doctor_name: Optional[str] = Query(None, description="Filter by doctor"),
     status: Optional[str] = Query(None, description="Filter by status: SCHEDULED, CHECKED_IN, IN_PROGRESS, COMPLETED, CANCELLED"),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session)
+    db: AsyncSession = Depends(get_platform_db_session)
 ):
     """
     Get today's appointments for the hospital.
@@ -255,7 +261,7 @@ async def modify_appointment(
     appointment_ref: str,
     modification_data: AppointmentUpdate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session)
+    db: AsyncSession = Depends(get_platform_db_session)
 ):
     """
     Modify existing appointment.
@@ -292,7 +298,7 @@ async def check_in_patient(
     appointment_ref: str,
     checkin_data: PatientCheckInCreate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session)
+    db: AsyncSession = Depends(get_platform_db_session)
 ):
     """
     Check-in patient for their appointment.
@@ -331,7 +337,7 @@ async def search_patients(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session)
+    db: AsyncSession = Depends(get_platform_db_session)
 ):
     """
     Search for patients in the hospital.
@@ -374,7 +380,7 @@ async def search_patients(
 async def get_patient_profile_for_schedule(
     patient_ref: str,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_platform_db_session),
 ):
     """
     Load full patient details for autofill (e.g. Schedule Appointment form after choosing a name).
@@ -396,7 +402,7 @@ async def get_patient_profile_for_schedule(
 async def get_appointment_statistics(
     date: Optional[str] = Query(None, description="Date in YYYY-MM-DD format (default: today)"),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session)
+    db: AsyncSession = Depends(get_platform_db_session)
 ):
     """
     Get appointment statistics for the day.
@@ -429,7 +435,7 @@ async def get_appointment_statistics(
 @router.get("/quick-actions")
 async def get_quick_actions(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session)
+    db: AsyncSession = Depends(get_platform_db_session)
 ):
     """
     Get quick action items for receptionist.
@@ -476,7 +482,7 @@ async def get_quick_actions(
 @router.get("/profile")
 async def get_receptionist_profile(
     current_user: User = Depends(require_receptionist()),
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_platform_db_session),
 ):
     """
     Get receptionist profile information.
@@ -540,7 +546,7 @@ async def get_receptionist_profile(
 async def update_receptionist_profile(
     body: ReceptionistProfileSelfUpdate,
     current_user: User = Depends(require_receptionist()),
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_platform_db_session),
 ):
     """
     Update receptionist-visible profile fields (name, email, phone, employee id, shift, work area, etc.).
