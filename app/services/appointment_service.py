@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timedelta, time
 from typing import List, Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_, func
+from sqlalchemy import select, and_, or_, func, desc
 from sqlalchemy.orm import selectinload
 from fastapi import HTTPException, status
 
@@ -467,7 +467,12 @@ class AppointmentService:
             count_query = count_query.where(PatientProfile.mrn.ilike(f"%{search_params['mrn']}%"))
         count_result = await self.db.execute(count_query)
         total = count_result.scalar() or 0
-        result = await self.db.execute(query.offset(offset).limit(limit).options(selectinload(PatientProfile.user)))
+        result = await self.db.execute(
+            query.order_by(desc(PatientProfile.created_at))
+            .offset(offset)
+            .limit(limit)
+            .options(selectinload(PatientProfile.user))
+        )
         patients = result.scalars().all()
         return {
             "patients": [
@@ -483,6 +488,7 @@ class AppointmentService:
                     "phone": p.user.phone,
                     "gender": p.gender,
                     "date_of_birth": p.date_of_birth,
+                    "created_at": p.created_at.isoformat() if p.created_at else None,
                 }
                 for p in patients
             ],
