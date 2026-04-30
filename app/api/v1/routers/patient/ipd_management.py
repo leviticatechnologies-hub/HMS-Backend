@@ -12,7 +12,7 @@ BUSINESS RULES:
 """
 from typing import Optional
 import uuid
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -23,7 +23,8 @@ from app.models.patient import PatientProfile
 from app.services.clinical_service import ClinicalService
 from app.schemas.clinical import (
     PatientAdmissionCreate, BedAssignmentCreate, TreatmentPlanCreate,
-    MedicationAdministrationCreate, NursingAssessmentCreate, DoctorRoundsCreate
+    MedicationAdministrationCreate, NursingAssessmentCreate, DoctorRoundsCreate,
+    DebugPatientEditUpdate,
 )
 from app.core.response_utils import success_response
 
@@ -231,3 +232,84 @@ async def debug_list_all_patients(
         "total_patients": len(patient_list),
         "patients": patient_list
     })
+
+
+@router.patch("/debug/all-patients/{patient_ref}")
+async def debug_edit_patient(
+    patient_ref: str,
+    payload: DebugPatientEditUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    DEBUG: Edit a patient from the debug patient list by patient_ref.
+    Hospital-scoped; updates user + patient profile fields.
+    """
+    clinical_service = ClinicalService(db)
+    user_context = clinical_service.get_user_context(current_user)
+    if not user_context.get("hospital_id"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Hospital context is required.",
+        )
+
+    hospital_id = uuid.UUID(user_context["hospital_id"])
+    result = await db.execute(
+        select(PatientProfile)
+        .where(
+            PatientProfile.patient_id == (patient_ref or "").strip(),
+            PatientProfile.hospital_id == hospital_id,
+        )
+        .options(selectinload(PatientProfile.user))
+    )
+    patient = result.scalar_one_or_none()
+    if not patient or not patient.user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Patient '{patient_ref}' not found in this hospital.",
+        )
+
+    data = payload.model_dump(exclude_unset=True)
+    user = patient.user
+
+    for key in ("first_name", "last_name", "phone", "email"):
+        if key in data:
+            setattr(user, key, data[key])
+
+    for key in (
+        "date_of_birth",
+        "gender",
+        "id_type",
+        "id_number",
+        "id_name",
+        "address",
+        "pincode",
+        "city",
+        "district",
+        "state",
+        "country",
+        "emergency_contact_name",
+        "emergency_contact_phone",
+        "emergency_contact_relation",
+        "medical_history",
+        "blood_group",
+        "blood_group_value",
+    ):
+        if key in data:
+            setattr(patient, key, data[key])
+
+    await db.commit()
+    await db.refresh(patient)
+    await db.refresh(user)
+
+    return success_response(
+        message="Patient updated successfully",
+        data={
+            "patient_id": patient.patient_id,
+            "name": f"{user.first_name} {user.last_name}".strip(),
+            "email": user.email,
+            "phone": user.phone,
+            "hospital_id": str(patient.hospital_id),
+            "created_at": patient.created_at.isoformat() if patient.created_at else None,
+        },
+    )

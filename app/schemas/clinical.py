@@ -212,13 +212,82 @@ class ReceptionistPatientDetailOut(BaseModel):
     blood_group_value: Optional[str] = None
 
 
+class DebugPatientEditUpdate(BaseModel):
+    """Debug-only patient update payload for IPD patient list tooling."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    first_name: Optional[str] = Field(default=None, validation_alias=AliasChoices("first_name", "firstName"))
+    last_name: Optional[str] = Field(default=None, validation_alias=AliasChoices("last_name", "lastName"))
+    phone: Optional[str] = None
+    email: Optional[EmailStr] = None
+    date_of_birth: Optional[str] = Field(default=None, validation_alias=AliasChoices("date_of_birth", "dob"))
+    gender: Optional[str] = None
+    id_type: Optional[str] = Field(default=None, validation_alias=AliasChoices("id_type", "idType"))
+    id_number: Optional[str] = Field(default=None, validation_alias=AliasChoices("id_number", "idNumber"))
+    id_name: Optional[str] = Field(default=None, validation_alias=AliasChoices("id_name", "idName"))
+    address: Optional[str] = None
+    pincode: Optional[str] = None
+    city: Optional[str] = None
+    district: Optional[str] = None
+    state: Optional[str] = None
+    country: Optional[str] = None
+    emergency_contact_name: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("emergency_contact_name", "emergencyContactName"),
+    )
+    emergency_contact_phone: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("emergency_contact_phone", "emergencyContact"),
+    )
+    emergency_contact_relation: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("emergency_contact_relation", "emergencyContactRelationship"),
+    )
+    medical_history: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("medical_history", "medicalHistory"),
+    )
+    blood_group: Optional[str] = Field(default=None, validation_alias=AliasChoices("blood_group", "bloodGroup"))
+    blood_group_value: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("blood_group_value", "bloodGroupValue"),
+    )
+
+
 class AppointmentUpdate(BaseModel):
     """Modify existing appointment"""
-    appointment_date: Optional[str] = None
-    appointment_time: Optional[str] = None
+    model_config = ConfigDict(populate_by_name=True)
+
+    appointment_date: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("appointment_date", "date"),
+    )
+    appointment_time: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("appointment_time", "time"),
+    )
     doctor_name: Optional[str] = None
-    department_name: Optional[str] = None
-    chief_complaint: Optional[str] = None
+    doctor_id: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("doctor_id", "doctorId"),
+    )
+    department_name: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("department_name", "department"),
+    )
+    department_id: Optional[str] = None
+    patient_ref: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("patient_ref", "patientId"),
+    )
+    appointment_type: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("appointment_type", "type"),
+    )
+    chief_complaint: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("chief_complaint", "reason"),
+    )
     notes: Optional[str] = None
     status: Optional[str] = None  # CONFIRMED, CANCELLED, RESCHEDULED
 

@@ -848,32 +848,108 @@ class ClinicalService:
                 detail="Cannot modify completed appointment"
             )
         
-        # Update fields
-        for field, value in modification_data.items():
-            if field == "doctor_name" and value:
-                # Update doctor
-                doctor = await self.get_doctor_by_name(value, user_context["hospital_id"])
-                appointment.doctor_id = doctor.id
-            elif field == "department_name" and value:
-                # Update department
-                department = await self.get_department_by_name(value, user_context["hospital_id"])
-                appointment.department_id = department.id
-            elif field == "appointment_date" and value is not None:
-                s = str(value).strip()
-                appointment.appointment_date = s[:10] if len(s) >= 10 else s
-            elif field == "appointment_time" and value is not None:
-                try:
-                    appointment.appointment_time = _appointment_time_to_db_hms(value)
-                except ValueError as e:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail={
-                            "code": "INVALID_APPOINTMENT_TIME",
-                            "message": str(e),
-                        },
+        # Update patient by patient_ref (frontend alias: patientId)
+        if modification_data.get("patient_ref"):
+            p_ref = str(modification_data["patient_ref"]).strip()
+            patient_result = await self.db.execute(
+                select(PatientProfile).where(
+                    and_(
+                        PatientProfile.hospital_id == user_context["hospital_id"],
+                        PatientProfile.patient_id == p_ref,
                     )
-            elif field in ["chief_complaint", "notes", "status"]:
-                setattr(appointment, field, value)
+                )
+            )
+            patient = patient_result.scalar_one_or_none()
+            if not patient:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Patient '{p_ref}' not found in your hospital",
+                )
+            appointment.patient_id = patient.id
+
+        # Update doctor (doctor_id has priority; fallback to doctor_name)
+        if modification_data.get("doctor_id"):
+            try:
+                doctor_user_id = uuid.UUID(str(modification_data["doctor_id"]).strip())
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="doctorId must be a valid UUID",
+                )
+            doctor_result = await self.db.execute(
+                select(User)
+                .join(user_roles, User.id == user_roles.c.user_id)
+                .join(Role, user_roles.c.role_id == Role.id)
+                .where(
+                    and_(
+                        User.id == doctor_user_id,
+                        User.hospital_id == user_context["hospital_id"],
+                        Role.name == UserRole.DOCTOR,
+                    )
+                )
+            )
+            doctor = doctor_result.scalar_one_or_none()
+            if not doctor:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Doctor not found for provided doctorId",
+                )
+            appointment.doctor_id = doctor.id
+        elif modification_data.get("doctor_name"):
+            doctor = await self.get_doctor_by_name(modification_data["doctor_name"], user_context["hospital_id"])
+            appointment.doctor_id = doctor.id
+
+        # Update department (department_id has priority; fallback to department_name)
+        if modification_data.get("department_id"):
+            try:
+                dep_id = uuid.UUID(str(modification_data["department_id"]).strip())
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="department_id must be a valid UUID",
+                )
+            dep_result = await self.db.execute(
+                select(Department).where(
+                    and_(
+                        Department.id == dep_id,
+                        Department.hospital_id == user_context["hospital_id"],
+                        Department.is_active == True,
+                    )
+                )
+            )
+            dep = dep_result.scalar_one_or_none()
+            if not dep:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Department not found for provided department_id",
+                )
+            appointment.department_id = dep.id
+        elif modification_data.get("department_name"):
+            department = await self.get_department_by_name(modification_data["department_name"], user_context["hospital_id"])
+            appointment.department_id = department.id
+
+        if "appointment_date" in modification_data and modification_data.get("appointment_date") is not None:
+            s = str(modification_data["appointment_date"]).strip()
+            appointment.appointment_date = s[:10] if len(s) >= 10 else s
+        if "appointment_time" in modification_data and modification_data.get("appointment_time") is not None:
+            try:
+                appointment.appointment_time = _appointment_time_to_db_hms(modification_data["appointment_time"])
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": "INVALID_APPOINTMENT_TIME",
+                        "message": str(e),
+                    },
+                )
+        if "appointment_type" in modification_data and modification_data.get("appointment_type") is not None:
+            appointment.appointment_type = str(modification_data["appointment_type"]).strip().upper()
+        if "chief_complaint" in modification_data:
+            appointment.chief_complaint = modification_data.get("chief_complaint")
+        if "notes" in modification_data:
+            appointment.notes = modification_data.get("notes")
+        if "status" in modification_data and modification_data.get("status") is not None:
+            appointment.status = str(modification_data["status"]).strip().upper()
 
         await self.db.commit()
         
