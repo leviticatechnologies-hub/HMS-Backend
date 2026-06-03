@@ -1242,7 +1242,9 @@ class DoctorService:
         doctor = await self.get_doctor_profile(user_context)
         
         # Build query conditions
-        conditions = [Appointment.doctor_id == doctor.id]
+        # conditions = [Appointment.doctor_id == doctor.id]
+        conditions = [Appointment.doctor_id == doctor.user_id]
+        
         
         if filters.get("date_from"):
             conditions.append(Appointment.appointment_date >= filters["date_from"])

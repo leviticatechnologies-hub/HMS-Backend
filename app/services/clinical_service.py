@@ -1281,6 +1281,7 @@ class ClinicalService:
                 detail=f"Selected doctor is not assigned to department '{department.name}'",
             )
 
+
         try:
             time_hhmmss = _appointment_time_to_db_hms(appointment_data.get("appointment_time"))
         except ValueError as e:
@@ -1392,7 +1393,7 @@ class ClinicalService:
             id=uuid.uuid4(),
             hospital_id=hospital_id_uuid,
             appointment_ref=appointment_ref,
-            patient_id=patient.id,
+            patient_id=patient.patient_id,
             doctor_id=doctor.id,
             department_id=department.id,
             appointment_date=appt_date,
@@ -1640,7 +1641,8 @@ class ClinicalService:
                 department_id=appointment.department_id,
             )
             appointment.doctor_id = doctor.id
-
+        
+        
         if "appointment_date" in modification_data and modification_data.get("appointment_date") is not None:
             s = str(modification_data["appointment_date"]).strip()
             appointment.appointment_date = s[:10] if len(s) >= 10 else s
@@ -3251,6 +3253,7 @@ class ClinicalService:
                 and_(
                     User.hospital_id == hid,
                     Role.name == UserRole.DOCTOR.value,
+                    #func.lower(Role.name) == UserRole.DOCTOR.value.lower(),
                     or_(
                         func.concat("Dr. ", User.first_name, " ", User.last_name).ilike(f"%{dn}%"),
                         func.concat(User.first_name, " ", User.last_name).ilike(f"%{dn}%"),
@@ -3269,6 +3272,8 @@ class ClinicalService:
             )
         result = await self.db.execute(q.limit(2))
         rows = result.scalars().all()
+        print("Searching doctor:", doctor_name)
+        print("Rows Found:", len(rows))
         if len(rows) == 1:
             return rows[0]
         if not rows:

@@ -19,6 +19,8 @@ from app.core.enums import AppointmentStatus, UserRole
 from app.core.utils import generate_appointment_ref, generate_patient_ref
 from app.utils.hospital_id_resolve import resolve_effective_hospital_id
 from app.utils.receptionist_serializers import build_receptionist_patient_full_payload
+from app.database.session import get_tenant_session_factory
+from app.database.tenant_context import resolve_tenant_database_name_for_hospital
 
 DEFAULT_APPOINTMENT_SLOT_MINUTES = 30
 
@@ -429,26 +431,62 @@ class AppointmentService:
             appointment_ref = generate_appointment_ref()
         
         # Create appointment (doctor_id references users.id, same as DoctorSchedule)
-        appointment = Appointment(
-            appointment_ref=appointment_ref,
-            patient_id=patient.id,
-            doctor_id=doctor.user_id,
-            department_id=department_id,
-            hospital_id=hospital_id,
-            appointment_date=appointment_date,
-            appointment_time=time_hhmmss,
-            duration_minutes=duration_minutes,
-            status=AppointmentStatus.REQUESTED,
-            chief_complaint=chief_complaint,
-            consultation_fee=doctor.consultation_fee,
-            created_by_role=UserRole.PATIENT,
-            created_by_user=patient_user_id
+        # Create appointment (doctor_id references users.id, same as DoctorSchedule)
+
+                # Generate unique appointment reference
+        appointment_ref = generate_appointment_ref()
+
+        # Ensure appointment_ref is unique
+        while True:
+            existing = await self.db.execute(
+                select(Appointment).where(
+                    Appointment.appointment_ref == appointment_ref
+                )
+            )
+
+            if not existing.scalar_one_or_none():
+                break
+
+            appointment_ref = generate_appointment_ref()
+
+        # Resolve tenant database
+        tenant_db_name = await resolve_tenant_database_name_for_hospital(
+            str(hospital_id)
         )
-        
-        self.db.add(appointment)
-        await self.db.commit()
-        await self.db.refresh(appointment)
-        
+
+        if not tenant_db_name:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Tenant database not configured"
+            )
+
+        tenant_session_factory = get_tenant_session_factory(
+            tenant_db_name
+        )
+
+        # Create appointment in tenant DB
+        async with tenant_session_factory() as tenant_db:
+
+            appointment = Appointment(
+                appointment_ref=appointment_ref,
+                patient_id=patient.id,
+                doctor_id=doctor.user_id,
+                department_id=department_id,
+                hospital_id=hospital_id,
+                appointment_date=appointment_date,
+                appointment_time=time_hhmmss,
+                duration_minutes=duration_minutes,
+                status=AppointmentStatus.REQUESTED,
+                chief_complaint=chief_complaint,
+                consultation_fee=doctor.consultation_fee,
+                created_by_role=UserRole.PATIENT,
+                created_by_user=patient_user_id
+            )
+
+            tenant_db.add(appointment)
+            await tenant_db.commit()
+            await tenant_db.refresh(appointment)
+
         return {
             "appointment_id": appointment_ref,
             "patient_id": patient.patient_id,
@@ -459,6 +497,36 @@ class AppointmentService:
             "consultation_fee": float(appointment.consultation_fee),
             "message": "Appointment booked successfully! Please arrive 15 minutes early."
         }
+        # appointment = Appointment(
+        #     appointment_ref=appointment_ref,
+        #     patient_id=patient.id,
+        #     doctor_id=doctor.user_id,
+        #     department_id=department_id,
+        #     hospital_id=hospital_id,
+        #     appointment_date=appointment_date,
+        #     appointment_time=time_hhmmss,
+        #     duration_minutes=duration_minutes,
+        #     status=AppointmentStatus.REQUESTED,
+        #     chief_complaint=chief_complaint,
+        #     consultation_fee=doctor.consultation_fee,
+        #     created_by_role=UserRole.PATIENT,
+        #     created_by_user=patient_user_id
+        # )
+        
+        # self.db.add(appointment)
+        # await self.db.commit()
+        # await self.db.refresh(appointment)
+        
+        # return {
+        #     "appointment_id": appointment_ref,
+        #     "patient_id": patient.patient_id,
+        #     "doctor_name": f"Dr. {doctor.user.first_name} {doctor.user.last_name}",
+        #     "appointment_date": appointment_date,
+        #     "appointment_time": appointment_time,
+        #     "status": appointment.status,
+        #     "consultation_fee": float(appointment.consultation_fee),
+        #     "message": "Appointment booked successfully! Please arrive 15 minutes early."
+        # }
     
     async def get_patient_appointments(
         self,
